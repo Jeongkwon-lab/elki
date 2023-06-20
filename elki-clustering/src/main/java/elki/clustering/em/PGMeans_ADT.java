@@ -74,8 +74,9 @@ public class PGMeans_ADT<O, M extends MeanModel, V extends NumberVector> impleme
    *
    * @param delta delta parameter
    * @param mfactory EM cluster model factory
-   * @param mprojection Random projection family
    * @param p number of projections
+   * @param random for Random Projection
+   * @param critical for AD test
    */
   public PGMeans_ADT(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double critical){
     this.delta = delta;

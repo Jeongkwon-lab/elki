@@ -35,6 +35,7 @@ import elki.distance.Distance;
 import elki.distance.minkowski.EuclideanDistance;
 import elki.distance.minkowski.SquaredEuclideanDistance;
 import elki.logging.Logging;
+import elki.logging.progress.FiniteProgress;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.parameterization.Parameterization;
@@ -88,12 +89,22 @@ public class AWE<O> implements HierarchicalClusteringAlgorithm{
     final ArrayDBIDs ids = DBIDUtil.ensureArray(relation.getDBIDs());
     // Compute the initial (lower triangular) distance matrix.
     DistanceQuery<O> dq = new QueryBuilder<>(relation, distance).distanceQuery();
-    ClusterDistanceMatrix mat = agnes.initializeDistanceMatrix(ids, dq, linkage);
     
     Instance ins = new Instance(linkage);
-    ClusterMergeHistoryBuilder builder = new ClusterMergeHistoryBuilder(ids, distance.isSquared());
+    ins.builder = new ClusterMergeHistoryBuilder(ids, distance.isSquared());
+    ins.mat = agnes.initializeDistanceMatrix(ids, dq, linkage);
     
-    return ins.run(mat, builder);
+    final int size = ins.mat.size;
+    ins.end = size;
+    // Repeat until everything merged into 1 cluster
+    FiniteProgress prog = LOG.isVerbose() ? new FiniteProgress("Agglomerative clustering", size - 1, LOG) : null;
+    // Use end to shrink the matrix virtually as the tailing objects disappear
+    for(int i = 1; i < size; i++) {
+      ins.end = ins.shrinkActiveSet(ins.mat.clustermap, ins.end, ins.findMerge());
+      LOG.incrementProcessed(prog);
+    }
+    LOG.ensureCompleted(prog);
+    return ins.builder.complete();
   }
 
   @Override

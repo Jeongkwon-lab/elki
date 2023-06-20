@@ -51,7 +51,7 @@ import elki.utilities.random.RandomFactory;
 import static elki.math.linearalgebra.VMath.*;
 
 import net.jafama.FastMath;
-
+// TODO 큰 데이터를 가지고 실행해서 잘되는지 확인하기
 public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
@@ -72,8 +72,8 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
    *
    * @param delta delta parameter
    * @param mfactory EM cluster model factory
-   * @param mprojection Random projection family
    * @param p number of projections
+   * @param random for Random Projection
    */
   public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random){
     this.delta = delta;
@@ -185,8 +185,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
   /**
    * generate a multivariate gaussian random projection
    * 
-   * @param means means of multivariate gaussian distribution
-   * @param cov covariance of multivariate gaussian distribution
+   * @param dim number of dimensions
    * @return multivariate gaussian random projection
    */
   private double[] generateMultivariateGaussianRandomProjection(int dim) {
