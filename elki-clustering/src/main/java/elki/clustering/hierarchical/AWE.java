@@ -20,30 +20,13 @@
  */
 package elki.clustering.hierarchical;
 
-import elki.clustering.hierarchical.linkage.CentroidLinkage;
 import elki.clustering.hierarchical.linkage.Linkage;
-import elki.clustering.hierarchical.linkage.SingleLinkage;
 import elki.clustering.hierarchical.linkage.WardLinkage;
-import elki.data.type.TypeInformation;
-import elki.data.type.TypeUtil;
-import elki.database.ids.ArrayDBIDs;
-import elki.database.ids.DBIDUtil;
-import elki.database.query.QueryBuilder;
-import elki.database.query.distance.DistanceQuery;
-import elki.database.relation.Relation;
 import elki.distance.Distance;
-import elki.distance.minkowski.EuclideanDistance;
-import elki.distance.minkowski.SquaredEuclideanDistance;
 import elki.logging.Logging;
-import elki.logging.progress.FiniteProgress;
-import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
-import elki.utilities.optionhandling.parameterization.Parameterization;
-import elki.utilities.optionhandling.parameters.ObjectParameter;
-import elki.Algorithm;
-import elki.clustering.hierarchical.AGNES.Instance;
 
-public class AWE<O> implements HierarchicalClusteringAlgorithm{
+public class AWE<O> extends AGNES implements HierarchicalClusteringAlgorithm{
   /**
    * Class logger
    */
@@ -59,10 +42,6 @@ public class AWE<O> implements HierarchicalClusteringAlgorithm{
    */
   protected Linkage linkage = WardLinkage.STATIC;
   
-  /**
-   * Agglomerative Nesting
-   */
-  protected AGNES agnes;
   
   /**
    * 
@@ -72,72 +51,53 @@ public class AWE<O> implements HierarchicalClusteringAlgorithm{
    * @param linkage
    */
   public AWE(Distance<? super O> distance, Linkage linkage) {
-    this.distance = distance;
-    this.linkage = linkage;
-    this.agnes = new AGNES(distance, linkage);
+    super(distance, linkage);
   }
+  
   /**
-   * run the main algorithm
+   * Main worker instance of AGNES.
    * 
-   * @param relation
-   * @return result
+   * @author Erich Schubert
    */
-  public ClusterMergeHistory run(Relation<O> relation) {
-    if(SingleLinkage.class.isInstance(linkage)) {
-      LOG.verbose("Notice: SLINK is a much faster algorithm for single-linkage clustering!");
-    }
-    final ArrayDBIDs ids = DBIDUtil.ensureArray(relation.getDBIDs());
-    // Compute the initial (lower triangular) distance matrix.
-    DistanceQuery<O> dq = new QueryBuilder<>(relation, distance).distanceQuery();
-    
-    Instance ins = new Instance(linkage);
-    ins.builder = new ClusterMergeHistoryBuilder(ids, distance.isSquared());
-    ins.mat = agnes.initializeDistanceMatrix(ids, dq, linkage);
-    
-    final int size = ins.mat.size;
-    ins.end = size;
-    // Repeat until everything merged into 1 cluster
-    FiniteProgress prog = LOG.isVerbose() ? new FiniteProgress("Agglomerative clustering", size - 1, LOG) : null;
-    // Use end to shrink the matrix virtually as the tailing objects disappear
-    for(int i = 1; i < size; i++) {
-      ins.end = ins.shrinkActiveSet(ins.mat.clustermap, ins.end, ins.findMerge());
-      LOG.incrementProcessed(prog);
-    }
-    LOG.ensureCompleted(prog);
-    return ins.builder.complete();
-  }
-
-  @Override
-  public TypeInformation[] getInputTypeRestriction() {
-    return TypeUtil.array(distance.getInputTypeRestriction());
-  }
-  public static class Par<O> implements Parameterizer {
+  public static class Instance extends AGNES.Instance{
     /**
-     * Option ID for linkage parameter.
-     */
-    public static final OptionID LINKAGE_ID = new OptionID("hierarchical.linkage", "Linkage method to use (e.g., Ward, Single-Link)");
-
-    /**
-     * Current linkage in use.
+     * Current linkage method in use.
      */
     protected Linkage linkage;
 
     /**
-     * The distance function to use.
+     * Cluster distance matrix
      */
-    protected Distance<? super O> distance;
+    protected ClusterDistanceMatrix mat;
 
-    @Override
-    public void configure(Parameterization config) {
-      new ObjectParameter<Linkage>(LINKAGE_ID, Linkage.class) //
-          .setDefaultValue(WardLinkage.class) //
-          .grab(config, x -> linkage = x);
-      Class<? extends Distance<?>> defaultD = (linkage instanceof WardLinkage || linkage instanceof CentroidLinkage) //
-          ? SquaredEuclideanDistance.class : EuclideanDistance.class;
-      new ObjectParameter<Distance<? super O>>(Algorithm.Utils.DISTANCE_FUNCTION_ID, Distance.class, defaultD) //
-          .grab(config, x -> distance = x);
+    /**
+     * Cluster result builder
+     */
+    protected ClusterMergeHistoryBuilder builder;
+
+    /**
+     * Active set size
+     */
+    protected int end;
+
+    /**
+     * Constructor.
+     *
+     * @param linkage Linkage
+     */
+    public Instance(Linkage linkage) {
+      super(linkage);
     }
-
+    //TODO merge함수에 n갯수만큼의 int[] clusterIds(인덱스 번호는 클러스터 번호, 내용은 데이터의 DBIDs를 담고있다.) = new int[k]를 만들어서 실제로 merge될때 clusterIds 두개의 합쳐지는 arr를 합치기.
+    // mat.clustermap은 클러스터의 번호는 담고있다. 처음에는 0-149까지 있고 합쳐질때마다 150++ 다른하나는 -1의 값을 갖는다.
+    @Override
+    protected void merge(double mindist, int x, int y) {
+      
+    }
+  }
+  
+  public static class Par<O> extends AGNES.Par<O> implements Parameterizer {
+    
     @Override
     public AWE<O> make() {
       return new AWE<>(distance, linkage);
