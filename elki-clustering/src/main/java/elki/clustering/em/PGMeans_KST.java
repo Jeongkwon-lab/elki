@@ -177,6 +177,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
    */
   private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
     CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
+    // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
     double[][] mat = cov.destroyToSampleMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);

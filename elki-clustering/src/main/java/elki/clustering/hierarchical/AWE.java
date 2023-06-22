@@ -20,8 +20,11 @@
  */
 package elki.clustering.hierarchical;
 
+import elki.clustering.em.EM;
+import elki.clustering.em.models.MultivariateGaussianModel;
 import elki.clustering.hierarchical.linkage.Linkage;
 import elki.clustering.hierarchical.linkage.SingleLinkage;
+import elki.data.NumberVector;
 import elki.database.ids.*;
 import elki.database.query.QueryBuilder;
 import elki.database.query.distance.DistanceQuery;
@@ -29,7 +32,12 @@ import elki.database.relation.Relation;
 import elki.distance.Distance;
 import elki.logging.Logging;
 import elki.logging.progress.FiniteProgress;
+import elki.math.linearalgebra.CovarianceMatrix;
 import elki.utilities.optionhandling.Parameterizer;
+
+import net.jafama.FastMath;
+
+import static elki.math.linearalgebra.VMath.*;
 
 public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
   /**
@@ -63,11 +71,11 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
    * 
    * @author Erich Schubert
    */
-  public static class Instance<O> extends AGNES.Instance{
+  public static class Instance<O,V extends NumberVector> extends AGNES.Instance{
     /**
      * realtion
      */
-    protected Relation<O> relation;
+    protected Relation<V> relation;
     /**
      * array to describe clusters that have ids of data which are in the cluster
      */
@@ -77,12 +85,16 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      */
     protected int r;
     /**
-     * the likelihood ratio test statistic
-     * 
-     * lambda[r-1] has the value of lambda_r (r = {1,...,n-1}, n is the number of data)
-     * lambda[0] has the value that is calculated when last two clusters(r=2) are merged to one cluster (r=1) 
+     * AWE value
+     * AWE[0] has the AWE value when the number of clusters is 1
+     * AWE[148] has the AWE when the number of clusters is 149
+     * the range of the number of clusters is between 1 and n-1, where n is the length of data.  
      */
-    protected double[] lambda;
+    protected double[] AWE;
+    /**
+     * index for lambda 
+     */
+    protected int idx;
     
     /**
      * Minimum loglikelihood to avoid -infinity.
@@ -94,12 +106,13 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      *
      * @param linkage Linkage
      */
-    public Instance(Linkage linkage, Relation<O> relation) {
+    public Instance(Linkage linkage, Relation<V> relation) {
       super(linkage);
       this.relation = relation;
       this.clusters = new ArrayModifiableDBIDs[relation.size()];
       this.r = relation.size();
-      this.lambda = new double[relation.size()-1];
+      this.AWE = new double[relation.size()-1];
+      this.idx = AWE.length - 1;
     }
     
     @Override
@@ -126,7 +139,7 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      * @param relation
      * @param clusterIds
      */
-    private void initClusterIds(Relation<O> relation, ArrayModifiableDBIDs[] clusterIds) {
+    private void initClusterIds(Relation<V> relation, ArrayModifiableDBIDs[] clusterIds) {
       int i=0;
       for (DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
         ArrayModifiableDBIDs ids = DBIDUtil.newArray();
@@ -152,7 +165,7 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
     }
     
     /**
-     * update the array clusters
+     * update the array clusters and calculate the AWE values
      * 
      * @param clusters array for cluster
      * @param x First matrix position
@@ -162,47 +175,102 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
       if(!clusters[x].isEmpty() && !clusters[y].isEmpty()) {
         ArrayModifiableDBIDs cluster1 = clusters[x];
         ArrayModifiableDBIDs cluster2 = clusters[y];
+        ModifiableDBIDs mergedCluster = DBIDUtil.union(cluster1, cluster2);
+        //lambda is the likelihood ratio test statistic
+        double lambda = likelihoodRatioTestStatistic(cluster1, cluster2, mergedCluster);
+        // number of observations in the merged cluster
+        int n = mergedCluster.size(); 
+        // TODO number of degrees of freedom in asymptotic chi square of lambda (between1-5)
+        int delta = numberOfFreeParameters();
+        // TODO p-dimensional multivariate normal case : 클러스터 갯수? 왜냐면 클러스터 하나당 하나의 MVN분포를 갖기때문에
+        int p = 1;
+        // compute AWE
+        AWE[idx--] = lambda - 2*delta*(1.5 + FastMath.log(p*n));
         clusters[y].addDBIDs(clusters[x]);
         clusters[x].clear();
-        ArrayModifiableDBIDs mergedCluster = clusters[y];
-        calculateLikelihoodRatioTestStatistic(cluster1, cluster2, mergedCluster);
       }
     }
     
     /**
-     * calculate the Likelihood ratio test statistic 
+     * compute the Likelihood ratio test statistic (lambda_r)
      * @param cluster1 first cluster
      * @param cluster2 second cluster
      * @param mergedCluster merged cluster
+     * @return Likelihood ratio test statistic
      */
-    private void calculateLikelihoodRatioTestStatistic(ArrayModifiableDBIDs cluster1, ArrayModifiableDBIDs cluster2, ArrayModifiableDBIDs mergedCluster) {
-      //TODO check if clusters[x] is a singleton and cluster[y] is singleton
+    private double likelihoodRatioTestStatistic(ArrayModifiableDBIDs cluster1, ArrayModifiableDBIDs cluster2, ModifiableDBIDs mergedCluster) {
+      //check if clusters[x] is a singleton and cluster[y] is singleton
       if(cluster1.size()==1 && cluster2.size()==1) {
-        
+        return 2.*loglikelihood(mergedCluster);
       }
       else if(cluster1.size()==1 || cluster2.size()==1) {
-        
+        return cluster1.size()==1 ? 2.*(loglikelihood(cluster2)-loglikelihood(mergedCluster)) : 2.*(loglikelihood(cluster1)-loglikelihood(mergedCluster));
       }
       else {
-        
+        return 2*(loglikelihood(cluster1)+loglikelihood(cluster2) - loglikelihood(mergedCluster));
       }
-      //TODO calculate the log likelihood of two clusters which will be merged
-      //TODO calculate the log likelihood of the merged cluster above
-      //TODO derive lambda_r and store into the lambda array
     }
     
     /**
-     * calculate loglikelihood 
+     * compute loglikelihood for normal cluster
      * 
      * @param cluster1
      * @return loglikelihood
      */
+    // TODO 계산이 이상함
     private double loglikelihood(ArrayModifiableDBIDs cluster) {
+      //create a model
+      CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
+      double[][] mat = cov.destroyToSampleMatrix();
+      double[] means = cov.getMeanVector();
+      int k = means.length;
+      MultivariateGaussianModel model = new MultivariateGaussianModel(1. / k, means, mat);
+      
+      //calculate the log likelihood
+      double[] probs = new double[cluster.size()];
+      int i=0;
       for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()) {
-        O vec = relation.get(iditer);
-        //TODO data의 mean과 var을 계산후 normal distribution model을 만들어서 log likelihood계산하기
+        V vec = relation.get(iditer);
+        double v = model.estimateLogDensity(vec);
+        probs[i++] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
       }
-      return 0.;
+      //loglikelihood = logSumExp( log p(x) )
+      return EM.logSumExp(probs);
+    }
+    /**
+     * for merged cluster
+     * @param cluster
+     * @return loglikelihood
+     */
+    private double loglikelihood(ModifiableDBIDs cluster) {
+      //create a model
+      CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
+      double[][] mat = cov.destroyToSampleMatrix();
+      double[] means = cov.getMeanVector();
+      int k = means.length;
+      MultivariateGaussianModel model = new MultivariateGaussianModel(1. / k, means, mat);
+      
+      //calculate the log likelihood
+      double[] probs = new double[cluster.size()];
+      int i=0;
+      for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()) {
+        V vec = relation.get(iditer);
+        double v = model.estimateLogDensity(vec);
+        probs[i++] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
+      }
+      //loglikelihood = LogSumExp( log p(x) )
+      return EM.logSumExp(probs);
+    }
+    /** TODO
+     * Compute the number of free parameters.
+     *
+     * @param k number of clusters
+     * @param mergedCluster the merged cluster
+     * @return Number of free parameters
+     */
+    private int numberOfFreeParameters() {
+      
+      return 0;
     }
   }
   
