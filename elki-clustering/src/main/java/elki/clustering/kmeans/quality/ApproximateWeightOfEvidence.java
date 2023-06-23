@@ -34,9 +34,6 @@ public class ApproximateWeightOfEvidence extends AbstractKMeansQualityMeasure<Nu
     return logLikelihood(relation, clustering, distance) 
         - (2*numberOfFreeParameters(relation, clustering) * (1.5 + FastMath.log(numPoints(clustering))));
   }
-  public static double logLikelihood(Relation<? extends NumberVector> relation, Clustering<? extends MeanModel> clustering, NumberVectorDistance<?> distance) {
-    return 0.;
-  }
   @Override
   public boolean isBetter(double currentCost, double bestCost) {
     // Careful: bestCost may be NaN!

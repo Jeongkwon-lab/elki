@@ -20,30 +20,41 @@
  */
 package elki.clustering.hierarchical;
 
+import java.util.List;
+
 import elki.clustering.em.EM;
-import elki.clustering.em.models.MultivariateGaussianModel;
+import elki.clustering.em.models.EMClusterModel;
+import elki.clustering.em.models.EMClusterModelFactory;
+import elki.clustering.em.models.MultivariateGaussianModelFactory;
 import elki.clustering.hierarchical.linkage.Linkage;
 import elki.clustering.hierarchical.linkage.SingleLinkage;
 import elki.data.NumberVector;
+import elki.data.model.MeanModel;
 import elki.database.ids.*;
 import elki.database.query.QueryBuilder;
 import elki.database.query.distance.DistanceQuery;
 import elki.database.relation.Relation;
+import elki.database.relation.RelationUtil;
 import elki.distance.Distance;
 import elki.logging.Logging;
 import elki.logging.progress.FiniteProgress;
-import elki.math.linearalgebra.CovarianceMatrix;
+import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
+import elki.utilities.optionhandling.constraints.CommonConstraints;
+import elki.utilities.optionhandling.parameterization.Parameterization;
+import elki.utilities.optionhandling.parameters.DoubleParameter;
+import elki.utilities.optionhandling.parameters.ObjectParameter;
 
 import net.jafama.FastMath;
 
-import static elki.math.linearalgebra.VMath.*;
-
-public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
+public class AWE<O, M extends MeanModel> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
   /**
    * Class logger
    */
   private static final Logging LOG = Logging.getLogger(AGNES.class);
+  
+  protected EMClusterModelFactory<? super O, M> mfactory;
+  protected double delta;
   
   /**
    * 
@@ -52,8 +63,10 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
    * @param distance
    * @param linkage
    */
-  public AWE(Distance<? super O> distance, Linkage linkage) {
+  public AWE(Distance<? super O> distance, Linkage linkage, EMClusterModelFactory<? super O, M> mfactory, double delta) {
     super(distance, linkage);
+    this.mfactory = mfactory;
+    this.delta = delta;
   }
   @Override
   public ClusterMergeHistory run(Relation<O> relation) {
@@ -64,22 +77,22 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
     // Compute the initial (lower triangular) distance matrix.
     DistanceQuery<O> dq = new QueryBuilder<>(relation, super.distance).distanceQuery();
     ClusterDistanceMatrix mat = AGNES.initializeDistanceMatrix(ids, dq, super.linkage);
-    return new Instance(super.linkage, relation).run(mat, new ClusterMergeHistoryBuilder(ids, super.distance.isSquared()));
+    return new Instance(super.linkage, relation, mfactory, delta).run(mat, new ClusterMergeHistoryBuilder(ids, super.distance.isSquared()));
   }
   /**
    * Main worker instance of AGNES.
    * 
    * @author Erich Schubert
    */
-  public static class Instance<O,V extends NumberVector> extends AGNES.Instance{
+  public static class Instance<O, V extends NumberVector, M extends MeanModel> extends AGNES.Instance{
     /**
      * realtion
      */
-    protected Relation<V> relation;
+    protected Relation<O> relation;
     /**
      * array to describe clusters that have ids of data which are in the cluster
      */
-    protected ArrayModifiableDBIDs[] clusters;
+    protected ModifiableDBIDs[] clusters;
     /**
      * number of clusters
      */
@@ -101,18 +114,23 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      */
     protected static final double MIN_LOGLIKELIHOOD = -100000;
     
+    protected EMClusterModelFactory<? super O, M> mfactory;
+    protected double delta;
+    
     /**
      * Constructor.
      *
      * @param linkage Linkage
      */
-    public Instance(Linkage linkage, Relation<V> relation) {
+    public Instance(Linkage linkage, Relation<O> relation, EMClusterModelFactory<? super O, M> mfactory, double delta) {
       super(linkage);
       this.relation = relation;
       this.clusters = new ArrayModifiableDBIDs[relation.size()];
       this.r = relation.size();
       this.AWE = new double[relation.size()-1];
       this.idx = AWE.length - 1;
+      this.mfactory = mfactory;
+      this.delta = delta;
     }
     
     @Override
@@ -139,10 +157,10 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      * @param relation
      * @param clusterIds
      */
-    private void initClusterIds(Relation<V> relation, ArrayModifiableDBIDs[] clusterIds) {
+    private void initClusterIds(Relation<O> relation, ModifiableDBIDs[] clusterIds) {
       int i=0;
       for (DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
-        ArrayModifiableDBIDs ids = DBIDUtil.newArray();
+        ModifiableDBIDs ids = DBIDUtil.newArray();
         ids.add(iditer);
         clusterIds[i++] = ids;
       }
@@ -171,10 +189,10 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      * @param x First matrix position
      * @param y Second matrix position
      */
-    private void updateClusters(ArrayModifiableDBIDs[] clusters, int x, int y) {
+    private void updateClusters(ModifiableDBIDs[] clusters, int x, int y) {
       if(!clusters[x].isEmpty() && !clusters[y].isEmpty()) {
-        ArrayModifiableDBIDs cluster1 = clusters[x];
-        ArrayModifiableDBIDs cluster2 = clusters[y];
+        ModifiableDBIDs cluster1 = clusters[x];
+        ModifiableDBIDs cluster2 = clusters[y];
         ModifiableDBIDs mergedCluster = DBIDUtil.union(cluster1, cluster2);
         //lambda is the likelihood ratio test statistic
         double lambda = likelihoodRatioTestStatistic(cluster1, cluster2, mergedCluster);
@@ -198,87 +216,77 @@ public class AWE<O> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
      * @param mergedCluster merged cluster
      * @return Likelihood ratio test statistic
      */
-    private double likelihoodRatioTestStatistic(ArrayModifiableDBIDs cluster1, ArrayModifiableDBIDs cluster2, ModifiableDBIDs mergedCluster) {
+    private double likelihoodRatioTestStatistic(ModifiableDBIDs cluster1, ModifiableDBIDs cluster2, ModifiableDBIDs mergedCluster) {
       //check if clusters[x] is a singleton and cluster[y] is singleton
       if(cluster1.size()==1 && cluster2.size()==1) {
-        return 2.*loglikelihood(mergedCluster);
+        return 2.*logLikelihood(mergedCluster);
       }
       else if(cluster1.size()==1 || cluster2.size()==1) {
-        return cluster1.size()==1 ? 2.*(loglikelihood(cluster2)-loglikelihood(mergedCluster)) : 2.*(loglikelihood(cluster1)-loglikelihood(mergedCluster));
+        return cluster1.size()==1 ? 2.*(logLikelihood(cluster2)-logLikelihood(mergedCluster)) : 2.*(logLikelihood(cluster1)-logLikelihood(mergedCluster));
       }
       else {
-        return 2*(loglikelihood(cluster1)+loglikelihood(cluster2) - loglikelihood(mergedCluster));
+        return 2*(logLikelihood(cluster1)+logLikelihood(cluster2) - logLikelihood(mergedCluster));
       }
     }
     
-    /**
-     * compute loglikelihood for normal cluster
-     * 
-     * @param cluster1
-     * @return loglikelihood
-     */
-    // TODO 계산이 이상함
-    private double loglikelihood(ArrayModifiableDBIDs cluster) {
-      //create a model
-      CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
-      double[][] mat = cov.destroyToSampleMatrix();
-      double[] means = cov.getMeanVector();
-      int k = means.length;
-      MultivariateGaussianModel model = new MultivariateGaussianModel(1. / k, means, mat);
-      
-      //calculate the log likelihood
-      double[] probs = new double[cluster.size()];
-      int i=0;
+    private double logLikelihood(ModifiableDBIDs cluster) {
+      // initial models
+      final int k = RelationUtil.dimensionality((Relation<V>) relation); // = models.size()
+      double emSum = 0.;
+      List<? extends EMClusterModel<? super O, M>> models = mfactory.buildInitialModels((Relation<O>) cluster, k);
       for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()) {
-        V vec = relation.get(iditer);
-        double v = model.estimateLogDensity(vec);
-        probs[i++] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
+        O vec = relation.get(iditer);
+        double[] probs = new double[k];
+        for(int i = 0; i < k; i++) {
+          double v = models.get(i).estimateLogDensity(vec);
+          probs[i] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
+        }
+        final double logP = EM.logSumExp(probs);
+        for(int i = 0; i < k; i++) {
+          probs[i] = FastMath.exp(probs[i] - logP);
+        }
+        emSum += logP;
       }
-      //loglikelihood = logSumExp( log p(x) )
-      return EM.logSumExp(probs);
+      return emSum / cluster.size();
     }
-    /**
-     * for merged cluster
-     * @param cluster
-     * @return loglikelihood
-     */
-    private double loglikelihood(ModifiableDBIDs cluster) {
-      //create a model
-      CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
-      double[][] mat = cov.destroyToSampleMatrix();
-      double[] means = cov.getMeanVector();
-      int k = means.length;
-      MultivariateGaussianModel model = new MultivariateGaussianModel(1. / k, means, mat);
-      
-      //calculate the log likelihood
-      double[] probs = new double[cluster.size()];
-      int i=0;
-      for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()) {
-        V vec = relation.get(iditer);
-        double v = model.estimateLogDensity(vec);
-        probs[i++] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
-      }
-      //loglikelihood = LogSumExp( log p(x) )
-      return EM.logSumExp(probs);
-    }
-    /** TODO
-     * Compute the number of free parameters.
-     *
-     * @param k number of clusters
-     * @param mergedCluster the merged cluster
-     * @return Number of free parameters
-     */
+    
     private int numberOfFreeParameters() {
-      
-      return 0;
+      return 1;
     }
   }
   
-  public static class Par<O> extends AGNES.Par<O> implements Parameterizer {
+  public static class Par<O, M extends MeanModel> extends AGNES.Par<O> implements Parameterizer {
+    /**
+     * Parameter to specify the EM cluster models to use.
+     */
+    public static final OptionID MODEL_ID = new OptionID("em.model", "Model factory.");
+    /**
+     * Parameter to specify the termination criterion for maximization of E(M):
+     * E(M) - E(M') &lt; em.delta, must be a double equal to or greater than 0.
+     */
+    public static final OptionID DELTA_ID = new OptionID("em.delta", //
+        "The termination criterion for maximization of E(M): E(M) - E(M') < em.delta");
+
+    /**
+     * Cluster model factory.
+     */
+    protected EMClusterModelFactory<O, M> mfactory;
+    /**
+     * Stopping threshold
+     */
+    protected double delta;
     
     @Override
-    public AWE<O> make() {
-      return new AWE<>(distance, linkage);
+    public void configure(Parameterization config) {
+      new ObjectParameter<EMClusterModelFactory<O, M>>(MODEL_ID, EMClusterModelFactory.class, MultivariateGaussianModelFactory.class) //
+          .grab(config, x -> mfactory = x);
+      new DoubleParameter(DELTA_ID, 1e-7)// 
+          .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_DOUBLE) //
+          .grab(config, x -> delta = x);
+    }
+    @Override
+    public AWE<O, M> make() {
+      return new AWE<>(distance, linkage, mfactory, delta);
     }
   }
 
