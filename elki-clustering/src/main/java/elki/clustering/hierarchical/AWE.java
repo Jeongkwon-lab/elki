@@ -20,24 +20,25 @@
  */
 package elki.clustering.hierarchical;
 
-import java.util.List;
-
-import elki.clustering.em.EM;
-import elki.clustering.em.models.EMClusterModel;
 import elki.clustering.em.models.EMClusterModelFactory;
+import elki.clustering.em.models.MultivariateGaussianModel;
 import elki.clustering.em.models.MultivariateGaussianModelFactory;
+import elki.clustering.hierarchical.linkage.CentroidLinkage;
 import elki.clustering.hierarchical.linkage.Linkage;
 import elki.clustering.hierarchical.linkage.SingleLinkage;
+import elki.clustering.hierarchical.linkage.WardLinkage;
 import elki.data.NumberVector;
 import elki.data.model.MeanModel;
 import elki.database.ids.*;
 import elki.database.query.QueryBuilder;
 import elki.database.query.distance.DistanceQuery;
 import elki.database.relation.Relation;
-import elki.database.relation.RelationUtil;
 import elki.distance.Distance;
+import elki.distance.minkowski.EuclideanDistance;
+import elki.distance.minkowski.SquaredEuclideanDistance;
 import elki.logging.Logging;
 import elki.logging.progress.FiniteProgress;
+import elki.math.linearalgebra.CovarianceMatrix;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.constraints.CommonConstraints;
@@ -45,9 +46,12 @@ import elki.utilities.optionhandling.parameterization.Parameterization;
 import elki.utilities.optionhandling.parameters.DoubleParameter;
 import elki.utilities.optionhandling.parameters.ObjectParameter;
 
+import static elki.math.linearalgebra.VMath.*;
+
+import elki.Algorithm;
 import net.jafama.FastMath;
 
-public class AWE<O, M extends MeanModel> extends AGNES<O> implements HierarchicalClusteringAlgorithm{
+public class AWE<O, M extends MeanModel> extends AGNES<O> {
   /**
    * Class logger
    */
@@ -84,7 +88,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> implements Hierarchica
    * 
    * @author Erich Schubert
    */
-  public static class Instance<O, V extends NumberVector, M extends MeanModel> extends AGNES.Instance{
+  public static class Instance<O extends NumberVector, M extends MeanModel> extends AGNES.Instance{
     /**
      * realtion
      */
@@ -125,7 +129,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> implements Hierarchica
     public Instance(Linkage linkage, Relation<O> relation, EMClusterModelFactory<? super O, M> mfactory, double delta) {
       super(linkage);
       this.relation = relation;
-      this.clusters = new ArrayModifiableDBIDs[relation.size()];
+      this.clusters = new ModifiableDBIDs[relation.size()];
       this.r = relation.size();
       this.AWE = new double[relation.size()-1];
       this.idx = AWE.length - 1;
@@ -218,40 +222,37 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> implements Hierarchica
      */
     private double likelihoodRatioTestStatistic(ModifiableDBIDs cluster1, ModifiableDBIDs cluster2, ModifiableDBIDs mergedCluster) {
       //check if clusters[x] is a singleton and cluster[y] is singleton
-      if(cluster1.size()==1 && cluster2.size()==1) {
+      if(isSingleton(cluster1) && isSingleton(cluster2)) {
         return 2.*logLikelihood(mergedCluster);
       }
-      else if(cluster1.size()==1 || cluster2.size()==1) {
-        return cluster1.size()==1 ? 2.*(logLikelihood(cluster2)-logLikelihood(mergedCluster)) : 2.*(logLikelihood(cluster1)-logLikelihood(mergedCluster));
+      else if(isSingleton(cluster1) || isSingleton(cluster2)) {
+        return isSingleton(cluster1) ? -2.*(logLikelihood(cluster2)-logLikelihood(mergedCluster)) : -2.*(logLikelihood(cluster1)-logLikelihood(mergedCluster));
       }
       else {
         return 2*(logLikelihood(cluster1)+logLikelihood(cluster2) - logLikelihood(mergedCluster));
       }
     }
+    private boolean isSingleton(ModifiableDBIDs cluster){
+      return cluster.size() < 2;
+    }
     
     private double logLikelihood(ModifiableDBIDs cluster) {
-      // initial models
-      final int k = RelationUtil.dimensionality((Relation<V>) relation); // = models.size()
-      double emSum = 0.;
-      List<? extends EMClusterModel<? super O, M>> models = mfactory.buildInitialModels((Relation<O>) cluster, k);
-      for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()) {
+      // create a model
+      CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
+      double[][] mat = cov.makePopulationMatrix();
+      double[] means = cov.getMeanVector();
+      MultivariateGaussianModel model = new MultivariateGaussianModel(1./r, means, mat);
+      double[] logProbs = new double[cluster.size()];
+      int i = 0;
+      for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()){
         O vec = relation.get(iditer);
-        double[] probs = new double[k];
-        for(int i = 0; i < k; i++) {
-          double v = models.get(i).estimateLogDensity(vec);
-          probs[i] = v > MIN_LOGLIKELIHOOD ? v : MIN_LOGLIKELIHOOD;
-        }
-        final double logP = EM.logSumExp(probs);
-        for(int i = 0; i < k; i++) {
-          probs[i] = FastMath.exp(probs[i] - logP);
-        }
-        emSum += logP;
+        logProbs[i++] = model.estimateLogDensity(vec);
       }
-      return emSum / cluster.size();
+      return sum(logProbs);
     }
     
     private int numberOfFreeParameters() {
-      return 1;
+      return 0;
     }
   }
   
@@ -283,6 +284,13 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> implements Hierarchica
       new DoubleParameter(DELTA_ID, 1e-7)// 
           .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_DOUBLE) //
           .grab(config, x -> delta = x);
+      new ObjectParameter<Linkage>(LINKAGE_ID, Linkage.class) //
+          .setDefaultValue(WardLinkage.class) //
+          .grab(config, x -> linkage = x);
+      Class<? extends Distance<?>> defaultD = (linkage instanceof WardLinkage || linkage instanceof CentroidLinkage) //
+          ? SquaredEuclideanDistance.class : EuclideanDistance.class;
+      new ObjectParameter<Distance<? super O>>(Algorithm.Utils.DISTANCE_FUNCTION_ID, Distance.class, defaultD) //
+          .grab(config, x -> distance = x);
     }
     @Override
     public AWE<O, M> make() {

@@ -35,13 +35,10 @@ import elki.data.model.MeanModel;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
 import elki.database.ids.DBIDIter;
-import elki.database.ids.DBIDs;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
-import elki.math.linearalgebra.CholeskyDecomposition;
 import elki.math.linearalgebra.CovarianceMatrix;
-import elki.math.linearalgebra.pca.EigenPair;
 import elki.math.linearalgebra.pca.PCAResult;
 import elki.math.linearalgebra.pca.PCARunner;
 import elki.math.linearalgebra.pca.StandardCovarianceMatrixBuilder;
@@ -153,7 +150,7 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
         Arrays.sort(projectedData);
         double A2 = AndersonDarlingTest.A2Noncentral(projectedData);
         A2 = AndersonDarlingTest.removeBiasNormalDistribution(A2, projectedData.length);
-        // 1.8692 is the critical value for AD-test
+        // 1.8692 is the critical value for AD-test : TODO Does the critical value have to be inputed as parameter?
         if(A2 > 1.8692) {
           //rejected
           rejected = true;
