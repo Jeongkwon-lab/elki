@@ -1,20 +1,20 @@
 /*
  * This file is part of ELKI:
  * Environment for Developing KDD-Applications Supported by Index-Structures
- * 
+ *
  * Copyright (C) 2023
  * ELKI Development Team
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
@@ -52,22 +52,22 @@ import static elki.math.linearalgebra.VMath.*;
 
 import net.jafama.FastMath;
 // TODO 큰 데이터를 가지고 실행해서 잘되는지 확인하기
-public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> implements ClusteringAlgorithm<Clustering<M>>{
+public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
    */
   private static final Logging LOG = Logging.getLogger(PGMeans_KST.class);
-  
+
   protected int k = 1;
   protected double delta;
   protected int p; // number of projections
   protected double alpha = 0.005; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
-  
+
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
-  
+
   /**
-   * 
+   *
    * Constructor.
    *
    * @param delta delta parameter
@@ -83,7 +83,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
   }
   /**
    * Performs the PG-Means algorithm on the given database.
-   * 
+   *
    * @param relation to use
    * @return result
    */
@@ -91,7 +91,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
     if(relation.size() == 0) {
       throw new IllegalArgumentException("database empty: must contain elements");
     }
-    
+
     // PG-Means
     boolean rejected = true;
     while(rejected) {
@@ -102,16 +102,16 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
         k++;
       }
     }
-    
+
     System.out.println("k :" + k);
     return new EM<O, M>(k, delta, mfactory).run(relation);
   }
-  
+
   /**
    * generate a random projection,
    * and project the dataset and model,
    * Then, KS-test
-   * 
+   *
    * @param relation
    * @param clustering the result of em with k
    * @param p number of projections
@@ -123,17 +123,17 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
     // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
     double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(relation.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
     //double critical = Math.sqrt((3/alpha)/n);
-    
+
     for(int i=0; i<p; i++) {
-      
+
       ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
-      final int dim = RelationUtil.dimensionality((Relation<V>) relation);
+      final int dim = RelationUtil.dimensionality(relation);
       // generate random projection
       double[] P = generateMultivariateGaussianRandomProjection(dim);
-      
+
       for(Cluster<M> cluster : clusters) {
-        NormalDistribution projectedNorm = projectedModel(cluster, (Relation<V>)relation, P);
-        double[] projectedData = projectedData(cluster, (Relation<V>) relation, P);
+        NormalDistribution projectedNorm = projectedModel(cluster, relation, P);
+        double[] projectedData = projectedData(cluster, relation, P);
         // then KS-Test with projected data and projected model
         double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
         if(D > critical) {
@@ -146,20 +146,20 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
   }
   /**
    * project the data set
-   * 
+   *
    * @param cluster
    * @param relation
    * @param P projection
    * @return one dimensional projected data
    */
-  private double[] projectedData(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
+  private double[] projectedData(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
     DBIDs ids = cluster.getIDs();
     double[][] data = new double[ids.size()][];
     double[] projectedData = new double[ids.size()];
-    
+
     int i=0;
     for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
-      V vec = relation.get(iditer);
+      O vec = relation.get(iditer);
       data[i++] = vec.toArray();
     }
     for(int j=0; j<data.length; j++) {
@@ -169,23 +169,23 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
   }
   /**
    * project model
-   * 
-   * @param cluster 
+   *
+   * @param cluster
    * @param relation
    * @param P projection
    * @return projected model
    */
-  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
+  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
     CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
     // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
-    double[][] mat = cov.destroyToSampleMatrix();
+    double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
   /**
    * generate a multivariate gaussian random projection
-   * 
+   *
    * @param dim number of dimensions
    * @return multivariate gaussian random projection
    */
@@ -196,11 +196,11 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
     for(int i=0; i<dim; i++) {
       randomProjectionCov[i][i] = 1.0/dim;
     }
-    
+
     CholeskyDecomposition chol = new CholeskyDecomposition(randomProjectionCov);
     double[][] L = chol.getL();
     double[] Z = generateRandomGaussian(L[0].length);
-    
+
     return plus(times(L,Z), randomProjectionMeans);
   }
   private double[] generateRandomGaussian(int n) {
@@ -211,10 +211,10 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
     }
     return Z;
   }
-  
+
   /**
    * KS Test
-   * 
+   *
    * @param sample data
    * @param norm normal distribution
    * @return test statistic
@@ -225,7 +225,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
 //    }
     int index = 0;
     double D = 0;
-    
+
     Arrays.sort(sample);
     while(index < sample.length) {
       double x = sample[index];
@@ -241,13 +241,13 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
     }
     return D;
   }
-  
+
   // TODO TypeInformation이 뭐하는 역할인지 알기 (gui에서 입력을 해야하게끔 만들어주는것인가?)
   @Override
   public TypeInformation[] getInputTypeRestriction() {
     return TypeUtil.array(mfactory.getInputTypeRestriction());
   }
-  
+
   public static class Par<O, M extends MeanModel> implements Parameterizer {
 
     /**
@@ -281,12 +281,12 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
      * Parameter to specify the saving of soft assignments
      */
     public static final OptionID SOFT_ID = new OptionID("em.soft", "Retain soft assignment of clusters.");
-    
+
     /**
      * Projection to specify the number of projections.
      */
     public static final OptionID NUMBER_OF_PROJECTIONS_ID = new OptionID("pgmeans.p", "Number of projections");
-    
+
     /**
      * Randomization seed.
      */
@@ -321,17 +321,17 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
      * Retain soft assignments?
      */
     boolean soft = false;
-    
+
     /**
      * Number of projections
      */
     protected int p;
-    
+
     /**
      * Random number generator.
      */
     protected RandomFactory random;
-    
+
 
     @Override
     public void configure(Parameterization config) {
@@ -356,7 +356,7 @@ public class PGMeans_KST<O, M extends MeanModel, V extends NumberVector> impleme
           .grab(config, x -> soft = x);
       new IntParameter(NUMBER_OF_PROJECTIONS_ID)//
           .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_INT) //
-      		.grab(config, x -> p = x); // 
+      		.grab(config, x -> p = x); //
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
     }
 

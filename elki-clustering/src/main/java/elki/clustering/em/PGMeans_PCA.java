@@ -1,20 +1,20 @@
 /*
  * This file is part of ELKI:
  * Environment for Developing KDD-Applications Supported by Index-Structures
- * 
+ *
  * Copyright (C) 2023
  * ELKI Development Team
- * 
+ *
  * This program is free software: you can redistribute it and/or modify
  * it under the terms of the GNU Affero General Public License as published by
  * the Free Software Foundation, either version 3 of the License, or
  * (at your option) any later version.
- * 
+ *
  * This program is distributed in the hope that it will be useful,
  * but WITHOUT ANY WARRANTY; without even the implied warranty of
  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
  * GNU Affero General Public License for more details.
- * 
+ *
  * You should have received a copy of the GNU Affero General Public License
  * along with this program. If not, see <http://www.gnu.org/licenses/>.
  */
@@ -24,7 +24,6 @@ package elki.clustering.em;
 import static elki.math.linearalgebra.VMath.*;
 
 import java.util.*;
-import java.util.stream.DoubleStream;
 
 import elki.clustering.ClusteringAlgorithm;
 import elki.clustering.em.models.EMClusterModelFactory;
@@ -42,8 +41,12 @@ import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
 import elki.math.linearalgebra.CholeskyDecomposition;
 import elki.math.linearalgebra.CovarianceMatrix;
-import elki.math.linearalgebra.EigenvalueDecomposition;
+import elki.math.linearalgebra.pca.EigenPair;
+import elki.math.linearalgebra.pca.PCAResult;
+import elki.math.linearalgebra.pca.PCARunner;
+import elki.math.linearalgebra.pca.StandardCovarianceMatrixBuilder;
 import elki.math.statistics.distribution.NormalDistribution;
+import elki.math.statistics.tests.AndersonDarlingTest;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.constraints.CommonConstraints;
@@ -53,22 +56,22 @@ import elki.utilities.random.RandomFactory;
 
 import net.jafama.FastMath;
 
-public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> implements ClusteringAlgorithm<Clustering<M>>{
+public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
    */
   private static final Logging LOG = Logging.getLogger(PGMeans_PCA.class);
-  
+
   protected int k = 1;
   protected double delta;
   protected int p; // number of projections
   protected double alpha = 0.005; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
-  
+
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
-  
+
   /**
-   * 
+   *
    * Constructor.
    *
    * @param delta delta parameter
@@ -84,7 +87,7 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
   }
   /**
    * Performs the PG-Means algorithm on the given database.
-   * 
+   *
    * @param relation to use
    * @return result
    */
@@ -92,7 +95,7 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
     if(relation.size() == 0) {
       throw new IllegalArgumentException("database empty: must contain elements");
     }
-    
+
     // PG-Means
     boolean rejected = true;
     while(rejected) {
@@ -103,16 +106,16 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
         k++;
       }
     }
-    
+
     System.out.println("k :" + k);
     return new EM<O, M>(k, delta, mfactory).run(relation);
   }
-  
+
   /**
    * generate a random projection,
    * and project the dataset and model,
    * Then, KS-test
-   * 
+   *
    * @param relation
    * @param clustering the result of em with k
    * @param p number of projections
@@ -124,23 +127,34 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
     // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
     double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(relation.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
     //double critical = Math.sqrt((3/alpha)/n);
-    
+
+    // test pca
     for(int i=0; i<p; i++) {
-      
+
       ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
-      final int dim = RelationUtil.dimensionality((Relation<V>) relation);
-      // mean removed data
-      double[][] X = meanRemovedData((Relation<V>) relation);
-      double[][] X_T = transpose(X);
-      // generate random projection
-      double[] P = generatePcaProjection((Relation<V>) relation, X);
-      
+
       for(Cluster<M> cluster : clusters) {
-        NormalDistribution projectedNorm = projectedModel(cluster, (Relation<V>)relation, P);
-        double[] projectedData = transposeTimes(P, X_T)[0];
+        double[] pcaFilter = runPCA(relation);
+        double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
+        int j=0;
+        for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
+          O vec = relation.get(iditer);
+          data[j++] = vec.toArray();
+        }
+        NormalDistribution projectedNorm = projectedModel(cluster, relation, pcaFilter);
+        // TODO ERROR
+        double[][] test = transposeTimes(pcaFilter, transpose(data));
+        double[] projectedData = test[0];
         // then KS-Test with projected data and projected model
-        double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
-        if(D > critical) {
+        // KSTest is too strict. It cannot be passed.
+        //double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
+
+        // AD-Test to pca projected data
+        Arrays.sort(projectedData);
+        double A2 = AndersonDarlingTest.A2Noncentral(projectedData);
+        A2 = AndersonDarlingTest.removeBiasNormalDistribution(A2, projectedData.length);
+        // 1.8692 is the critical value for AD-test
+        if(A2 > 1.8692) {
           //rejected
           rejected = true;
         }
@@ -149,153 +163,44 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
     return rejected;
   }
   /**
-   *  remove mean from data
-   * 
-   * @param cluster
+   * run PCA using ELKI
+   *
    * @param relation
-   * @return X-mean
+   * @return filter that outputs one dimension matrix
    */
-  private double[][] meanRemovedData(Relation<V> relation){
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
-    double[] means = cov.getMeanVector();
-    int dim = RelationUtil.dimensionality(relation);
-    int n = relation.size(); // number of data in the cluster
-    double[][] data = new double[n][dim];
-    int i=0;
-    for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
-      V vec = relation.get(iditer);
-      data[i] = vec.toArray();
-      // remove means from data
-      for(int d=0; d<dim; d++) {
-        data[i][d] = data[i][d] - means[d];
-      }
-      i++;
-    }
-    return data;
-  }
-  /**
-   * generate the projection of PCA to reduce the dimensionality to 1dim 
-   * 
-   * @param cluster
-   * @param relation
-   * @return projection of pca
-   */
-  private double[] generatePcaProjection(Relation<V> relation, double[][] meanRemovedDataset) {
-    // mean removed data
-    double[][] data = meanRemovedDataset; // 150x2
-    // generatedouble[]  a sample covariance
-    double[][] sampleCov = times(transposeTimes(data, data), 1.0/relation.size()); // 2x2 
-    
-    // eigenvalue decomposition
-    EigenvalueDecomposition evd = new EigenvalueDecomposition(sampleCov);
-    double[][] V = evd.getV();
-    double[] sortedVd = new double[V.length];
-    double[][] D = evd.getD();
-    double[] diag = new double[D.length];
-    Map<Double, Integer> indexDiag = new HashMap<>();
-    // assign diagonal vector of eigen values and mapping diag to index
-    for(int j=0; j<D.length; j++) {
-      diag[j] = D[j][j];
-      indexDiag.put(diag[j], j);
-    }
-    // sort
-    sortDecending(diag);
-    int d = 1; // because we want to reduce the dimesions to 1
-    for(int h=0; h<V.length; h++) {
-      sortedVd[h] = V[h][indexDiag.get(diag[0])]; // 가장 큰 diag을 가진 값의 eigen vector만 살리기
-    }
-    
-    return sortedVd;
-  }
-  /**
-   * sort double array in decending order
-   * 
-   * @param arr
-   */
-  private void sortDecending(double[] arr) {
-    Arrays.sort(arr);
+  private double[] runPCA(Relation<O> relation) {
+    StandardCovarianceMatrixBuilder scov = new StandardCovarianceMatrixBuilder();
+    PCARunner pca = new PCARunner(scov);
+    PCAResult pcaResult = pca.processIds(relation.getDBIDs(), relation);
 
-    int start = 0;
-    int end = arr.length - 1;
-    while (start < end) {
-        double temp = arr[start];
-        arr[start] = arr[end];
-        arr[end] = temp;
-        start++;
-        end--;
+    // return first Vector in sorted EigenPairs, because the filter outputs one dimension
+    double[][] eigenvectors = pcaResult.getEigenvectors();
+    double[] filter = new double[eigenvectors.length];
+    for(int i=0; i<filter.length; i++) {
+      filter[i] = eigenvectors[i][0];
     }
+    return filter;
   }
-  /**
-   * project the data set
-   * 
-   * @param cluster
-   * @param relation
-   * @param P projection
-   * @return one dimensional projected data
-   */
-  private double[] projectedData(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
-    DBIDs ids = cluster.getIDs();
-    double[][] data = new double[ids.size()][];
-    double[] projectedData = new double[ids.size()];
-    
-    int i=0;
-    for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
-      V vec = relation.get(iditer);
-      data[i++] = vec.toArray();
-    }
-    for(int j=0; j<data.length; j++) {
-      projectedData[j] = transposeTimes(P, data[j]);
-    }
-    return projectedData;
-  }
+
   /**
    * project model
-   * 
-   * @param cluster 
+   *
+   * @param cluster
    * @param relation
    * @param P projection
    * @return projected model
    */
-  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
+  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
     CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
-    double[][] mat = cov.destroyToSampleMatrix();
+    double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
-  /**
-   * generate a multivariate gaussian random projection
-   * 
-   * @param means means of multivariate gaussian distribution
-   * @param cov covariance of multivariate gaussian distribution
-   * @return multivariate gaussian random projection
-   */
-  private double[] generateMultivariateGaussianRandomProjection(int dim) {
-    // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
-    double[] randomProjectionMeans = new double[dim];
-    double[][] randomProjectionCov = new double[dim][dim];
-    for(int i=0; i<dim; i++) {
-      randomProjectionCov[i][i] = 1.0/dim;
-    }
-    
-    CholeskyDecomposition chol = new CholeskyDecomposition(randomProjectionCov);
-    double[][] L = chol.getL();
-    double[] Z = generateRandomGaussian(L[0].length);
-    
-    return plus(times(L,Z), randomProjectionMeans);
-  }
-  private double[] generateRandomGaussian(int n) {
-    Random rand = random.getSingleThreadedRandom();
-    double[] Z = new double[n];
-    for(int i=0; i<n; i++) {
-      Z[i] = rand.nextGaussian();
-    }
-    return Z;
-  }
-  
+
   /**
    * KS Test
-   * 
+   *
    * @param sample data
    * @param norm normal distribution
    * @return test statistic
@@ -306,7 +211,7 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
 //    }
     int index = 0;
     double D = 0;
-    
+
     Arrays.sort(sample);
     while(index < sample.length) {
       double x = sample[index];
@@ -322,13 +227,12 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
     }
     return D;
   }
-  
-  // TODO TypeInformation이 뭐하는 역할인지 알기 (gui에서 입력을 해야하게끔 만들어주는것인가?)
+
   @Override
   public TypeInformation[] getInputTypeRestriction() {
     return TypeUtil.array(mfactory.getInputTypeRestriction());
   }
-  
+
   public static class Par<O, M extends MeanModel> implements Parameterizer {
 
     /**
@@ -362,12 +266,12 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
      * Parameter to specify the saving of soft assignments
      */
     public static final OptionID SOFT_ID = new OptionID("em.soft", "Retain soft assignment of clusters.");
-    
+
     /**
      * Projection to specify the number of projections.
      */
     public static final OptionID NUMBER_OF_PROJECTIONS_ID = new OptionID("pgmeans.p", "Number of projections");
-    
+
     /**
      * Randomization seed.
      */
@@ -402,17 +306,17 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
      * Retain soft assignments?
      */
     boolean soft = false;
-    
+
     /**
      * Number of projections
      */
     protected int p;
-    
+
     /**
      * Random number generator.
      */
     protected RandomFactory random;
-    
+
 
     @Override
     public void configure(Parameterization config) {
@@ -437,7 +341,7 @@ public class PGMeans_PCA<O, M extends MeanModel, V extends NumberVector> impleme
           .grab(config, x -> soft = x);
       new IntParameter(NUMBER_OF_PROJECTIONS_ID)//
           .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_INT) //
-      		.grab(config, x -> p = x); // 
+      		.grab(config, x -> p = x); //
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
     }
 
