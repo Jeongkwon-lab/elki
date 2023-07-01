@@ -31,6 +31,7 @@ import elki.clustering.em.models.MultivariateGaussianModelFactory;
 import elki.data.Cluster;
 import elki.data.Clustering;
 import elki.data.NumberVector;
+import elki.data.VectorUtil;
 import elki.data.model.MeanModel;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
@@ -58,7 +59,6 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
   protected int k = 1;
   protected double delta;
   protected int p; // number of projections
-  protected double alpha = 0.005; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
   protected double critical;
 
   protected EMClusterModelFactory<? super O, M> mfactory;
@@ -101,6 +101,11 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
       if(rejected) {
         k++;
       }
+      // in general, the number of clusters is within 10
+      if(k>10){
+        System.out.println("KS-Test is going to be wrong");
+        break;
+      }
     }
 
     System.out.println("k :" + k);
@@ -120,8 +125,8 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
     boolean rejected = false;
 
-    for(int i=0; i<p; i++) {
-
+    // we dont need to repeat the test p-times ? or in pca 
+    // for(int i=0; i<p; i++) {
       ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
       final int dim = RelationUtil.dimensionality(relation);
       // generate Means and Covariance for random projection P, which is a matrix dim x 1
@@ -132,20 +137,20 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
       }
 
       double[] P = generateMultivariateGaussianRandomProjection(randomProjectionMeans, randomProjectionCov);
+
       for(Cluster<M> cluster : clusters) {
-//        NormalDistribution projectedNorm = projectedModel(cluster, (Relation<V>)relation, P);
         double[] projectedData = projectedData(cluster, relation, P);
-        // then AD-Test with projected data and projected model
+        // then AD-Test with projected data
         Arrays.sort(projectedData);
-        // TODO Standard cdf와 비교해도 괜찮은가? 위에서 projected된 모델과 해야하나?
         double A2 = AndersonDarlingTest.A2Noncentral(projectedData);
         A2 = AndersonDarlingTest.removeBiasNormalDistribution(A2, projectedData.length);
         if(A2 > critical) {
           //rejected
-          rejected = true;
+          return rejected = true;
         }
       }
-    }
+      
+    // }
     return rejected;
   }
   /**
@@ -171,21 +176,7 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
     }
     return projectedData;
   }
-  /**
-   * project model
-   *
-   * @param cluster
-   * @param relation
-   * @param P projection
-   * @return projected model
-   */
-//  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<V> relation, double[] P) {
-//    CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
-//    double[][] mat = cov.destroyToSampleMatrix();
-//    double projectedMean = transposeTimes(P, cov.getMeanVector());
-//    double projectedVar = transposeTimesTimes(P, mat, P);
-//    return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
-//  }
+  
   /**
    * generate a multivariate gaussian random projection
    *
@@ -337,8 +328,8 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
       // TODO the critical value is imported from G-Means
       new DoubleParameter(CRITICAL_ID, 1.8692) //
-      .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
-      .grab(config, x -> critical = x);
+          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
+          .grab(config, x -> critical = x);
     }
 
     @Override

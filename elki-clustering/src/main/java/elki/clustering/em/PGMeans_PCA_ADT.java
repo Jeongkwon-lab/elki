@@ -38,11 +38,9 @@ import elki.database.ids.DBIDIter;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
-import elki.math.linearalgebra.CovarianceMatrix;
 import elki.math.linearalgebra.pca.PCAResult;
 import elki.math.linearalgebra.pca.PCARunner;
 import elki.math.linearalgebra.pca.StandardCovarianceMatrixBuilder;
-import elki.math.statistics.distribution.NormalDistribution;
 import elki.math.statistics.tests.AndersonDarlingTest;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
@@ -51,21 +49,18 @@ import elki.utilities.optionhandling.parameterization.Parameterization;
 import elki.utilities.optionhandling.parameters.*;
 import elki.utilities.random.RandomFactory;
 
-import net.jafama.FastMath;
-
-public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
+public class PGMeans_PCA_ADT<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
    */
-  private static final Logging LOG = Logging.getLogger(PGMeans_PCA.class);
+  private static final Logging LOG = Logging.getLogger(PGMeans_PCA_ADT.class);
 
   protected int k = 1;
   protected double delta;
-  protected int p; // number of projections
-  protected double alpha = 0.005; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
 
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
+  protected double critical;
 
   /**
    *
@@ -74,13 +69,13 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
    * @param delta delta parameter
    * @param mfactory EM cluster model factory
    * @param mprojection Random projection family
-   * @param p number of projections
+   * @param critical for AD-Test
    */
-  public PGMeans_PCA(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random){
+  public PGMeans_PCA_ADT(double delta, EMClusterModelFactory<? super O, M> mfactory, RandomFactory random, double critical){
     this.delta = delta;
     this.mfactory = mfactory;
-    this.p = p;
     this.random = random;
+    this.critical = critical;
   }
   /**
    * Performs the PG-Means algorithm on the given database.
@@ -98,9 +93,14 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
     while(rejected) {
       EM<O, M> em = new EM<O, M>(k, delta, mfactory);
       Clustering<M> clustering = em.run(relation);
-      rejected = testResult(relation, clustering, p);
+      rejected = testResult(relation, clustering);
       if(rejected) {
         k++;
+      }
+      // in general, the number of clusters is within 10
+      if(k>10){
+        System.out.println("KS-Test is going to be wrong");
+        break;
       }
     }
 
@@ -118,43 +118,31 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
    * @param p number of projections
    * @return true if the test is rejected
    */
-  private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
+  private boolean testResult(Relation<O> relation, Clustering<M> clustering) {
     boolean rejected = false;
-    // TODO 제대로된 critical value구하는 식 찾기
-    // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
-    double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(relation.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
-    //double critical = Math.sqrt((3/alpha)/n);
 
-    // test pca
-    for(int i=0; i<p; i++) {
+    // pca depends on the variance of cluster. So we have not to repeat the test p-times
+    ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
 
-      ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
+    for(Cluster<M> cluster : clusters) {
+      double[] pcaFilter = runPCA(relation, cluster);
+      double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
+      int j=0;
+      for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
+        O vec = relation.get(iditer);
+        data[j++] = vec.toArray();
+      }
 
-      for(Cluster<M> cluster : clusters) {
-        double[] pcaFilter = runPCA(relation);
-        double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
-        int j=0;
-        for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
-          O vec = relation.get(iditer);
-          data[j++] = vec.toArray();
-        }
-        NormalDistribution projectedNorm = projectedModel(cluster, relation, pcaFilter);
-        // TODO ERROR
-        double[][] test = transposeTimes(pcaFilter, transpose(data));
-        double[] projectedData = test[0];
-        // then KS-Test with projected data and projected model
-        // KSTest is too strict. It cannot be passed.
-        //double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
+      double[][] test = transposeTimes(pcaFilter, transpose(data));
+      double[] projectedData = test[0];
 
-        // AD-Test to pca projected data
-        Arrays.sort(projectedData);
-        double A2 = AndersonDarlingTest.A2Noncentral(projectedData);
-        A2 = AndersonDarlingTest.removeBiasNormalDistribution(A2, projectedData.length);
-        // 1.8692 is the critical value for AD-test : TODO Does the critical value have to be inputed as parameter?
-        if(A2 > 1.8692) {
-          //rejected
-          rejected = true;
-        }
+      // AD-Test to pca projected data
+      Arrays.sort(projectedData);
+      double A2 = AndersonDarlingTest.A2Noncentral(projectedData);
+      A2 = AndersonDarlingTest.removeBiasNormalDistribution(A2, projectedData.length);
+      if(A2 > critical) {
+        //rejected
+        return rejected = true;
       }
     }
     return rejected;
@@ -165,10 +153,10 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
    * @param relation
    * @return filter that outputs one dimension matrix
    */
-  private double[] runPCA(Relation<O> relation) {
+  private double[] runPCA(Relation<O> relation, Cluster<M> cluster) {
     StandardCovarianceMatrixBuilder scov = new StandardCovarianceMatrixBuilder();
     PCARunner pca = new PCARunner(scov);
-    PCAResult pcaResult = pca.processIds(relation.getDBIDs(), relation);
+    PCAResult pcaResult = pca.processIds(cluster.getIDs(), relation);
 
     // return first Vector in sorted EigenPairs, because the filter outputs one dimension
     double[][] eigenvectors = pcaResult.getEigenvectors();
@@ -177,52 +165,6 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
       filter[i] = eigenvectors[i][0];
     }
     return filter;
-  }
-
-  /**
-   * project model
-   *
-   * @param cluster
-   * @param relation
-   * @param P projection
-   * @return projected model
-   */
-  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
-    double[][] mat = cov.makePopulationMatrix();
-    double projectedMean = transposeTimes(P, cov.getMeanVector());
-    double projectedVar = transposeTimesTimes(P, mat, P);
-    return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
-  }
-
-  /**
-   * KS Test
-   *
-   * @param sample data
-   * @param norm normal distribution
-   * @return test statistic
-   */
-  private double ksTest(double[] sample, NormalDistribution norm) {
-//    if(sample.length < 35) {
-//      throw new IllegalArgumentException("size of data is not sufficiently large");
-//    }
-    int index = 0;
-    double D = 0;
-
-    Arrays.sort(sample);
-    while(index < sample.length) {
-      double x = sample[index];
-      double model_cdf = norm.cdf(x);
-      // Advance on first curve
-      index++;
-      // Handle multiple points with same x:
-      while (index < sample.length && sample[index] == x) {
-        index++;
-      }
-      double empirical_cdf = ((double) index + 1.) / (sample.length + 1.);
-      D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
-    }
-    return D;
   }
 
   @Override
@@ -265,14 +207,13 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
     public static final OptionID SOFT_ID = new OptionID("em.soft", "Retain soft assignment of clusters.");
 
     /**
-     * Projection to specify the number of projections.
-     */
-    public static final OptionID NUMBER_OF_PROJECTIONS_ID = new OptionID("pgmeans.p", "Number of projections");
-
-    /**
      * Randomization seed.
      */
     public static final OptionID SEED_ID = new OptionID("pgmeans.seed", "Random seed for splitting clusters.");
+    /**
+     * Critical value for the Anderson-Darling-Test
+     */
+    public static final OptionID CRITICAL_ID = new OptionID("gmeans.critical", "Critical value for the Anderson Darling test. \u03B1=0.0001 is 1.8692, \u03B1=0.005 is 1.159 \u03B1=0.01 is 1.0348");
 
     /**
      * Stopping threshold
@@ -305,15 +246,14 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
     boolean soft = false;
 
     /**
-     * Number of projections
-     */
-    protected int p;
-
-    /**
      * Random number generator.
      */
     protected RandomFactory random;
 
+    /**
+     * critical value for AD-Test
+     */
+    protected double critical;
 
     @Override
     public void configure(Parameterization config) {
@@ -336,15 +276,15 @@ public class PGMeans_PCA<O extends NumberVector, M extends MeanModel> implements
           .grab(config, x -> prior = x);
       new Flag(SOFT_ID) //
           .grab(config, x -> soft = x);
-      new IntParameter(NUMBER_OF_PROJECTIONS_ID)//
-          .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_INT) //
-      		.grab(config, x -> p = x); //
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
+      new DoubleParameter(CRITICAL_ID, 1.8692) //
+          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
+          .grab(config, x -> critical = x);
     }
 
     @Override
-    public PGMeans_PCA make() {
-      return new PGMeans_PCA(delta, mfactory, p, random);
+    public PGMeans_PCA_ADT make() {
+      return new PGMeans_PCA_ADT(delta, mfactory, random, critical);
     }
   }
 }

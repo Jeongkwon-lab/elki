@@ -51,7 +51,7 @@ import elki.utilities.random.RandomFactory;
 import static elki.math.linearalgebra.VMath.*;
 
 import net.jafama.FastMath;
-// TODO 큰 데이터를 가지고 실행해서 잘되는지 확인하기
+
 public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
@@ -61,7 +61,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
   protected int k = 1;
   protected double delta;
   protected int p; // number of projections
-  protected double alpha = 0.005; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
+  protected double alpha = 0.05; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
 
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
@@ -101,8 +101,12 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       if(rejected) {
         k++;
       }
+      // in general, the number of clusters is within 10
+      if(k>10){
+        System.out.println("KS-Test is going to be wrong");
+        break;
+      }
     }
-
     System.out.println("k :" + k);
     return new EM<O, M>(k, delta, mfactory).run(relation);
   }
@@ -119,26 +123,26 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    */
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
     boolean rejected = false;
-    // TODO 제대로된 critical value구하는 식 찾기
-    // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
-    double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(relation.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
-    //double critical = Math.sqrt((3/alpha)/n);
 
     for(int i=0; i<p; i++) {
-
       ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
       final int dim = RelationUtil.dimensionality(relation);
       // generate random projection
       double[] P = generateMultivariateGaussianRandomProjection(dim);
 
       for(Cluster<M> cluster : clusters) {
+        // TODO 제대로된 critical value구하는 식 찾기
+        // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
+        double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
+        //double critical = Math.sqrt((3/alpha)/cluster.size()); // with sufficiently large n
+
         NormalDistribution projectedNorm = projectedModel(cluster, relation, P);
         double[] projectedData = projectedData(cluster, relation, P);
         // then KS-Test with projected data and projected model
         double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
         if(D > critical) {
           //rejected
-          rejected = true;
+          return rejected = true;
         }
       }
     }
@@ -203,6 +207,11 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
 
     return plus(times(L,Z), randomProjectionMeans);
   }
+  /**
+   * generate one dimensional random gaussian vector
+   * @param n length of data
+   * @return random gaussian vector
+   */
   private double[] generateRandomGaussian(int n) {
     Random rand = random.getSingleThreadedRandom();
     double[] Z = new double[n];

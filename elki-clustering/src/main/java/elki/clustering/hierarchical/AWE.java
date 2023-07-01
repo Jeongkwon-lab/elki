@@ -103,9 +103,6 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
     protected int r;
     /**
      * AWE value
-     * AWE[0] has the AWE value when the number of clusters is 1
-     * AWE[148] has the AWE when the number of clusters is 149
-     * the range of the number of clusters is between 1 and n-1, where n is the length of data.  
      */
     protected double[] AWE;
     /**
@@ -131,7 +128,8 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
       this.relation = relation;
       this.clusters = new ModifiableDBIDs[relation.size()];
       this.r = relation.size();
-      this.AWE = new double[relation.size()-1];
+      this.AWE = new double[relation.size()];
+      AWE[0] = 0.;
       this.idx = AWE.length - 1;
       this.mfactory = mfactory;
       this.delta = delta;
@@ -152,7 +150,14 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
         LOG.incrementProcessed(prog);
       }
       LOG.ensureCompleted(prog);
+      printArr(AWE);
       return builder.complete();
+    }
+    private void printArr(double[] arr){
+      for(int i=0; i<arr.length; i++){
+        System.out.print(arr[i]+", ");
+      }
+      System.out.println("");
     }
     
     /**
@@ -200,14 +205,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
         ModifiableDBIDs mergedCluster = DBIDUtil.union(cluster1, cluster2);
         //lambda is the likelihood ratio test statistic
         double lambda = likelihoodRatioTestStatistic(cluster1, cluster2, mergedCluster);
-        // number of observations in the merged cluster
-        int n = mergedCluster.size(); 
-        // TODO number of degrees of freedom in asymptotic chi square of lambda (between1-5)
-        int delta = numberOfFreeParameters();
-        // TODO p-dimensional multivariate normal case : 클러스터 갯수? 왜냐면 클러스터 하나당 하나의 MVN분포를 갖기때문에
-        int p = 1;
-        // compute AWE
-        AWE[idx--] = lambda - 2*delta*(1.5 + FastMath.log(p*n));
+        AWE[idx--] = lambda;
         clusters[y].addDBIDs(clusters[x]);
         clusters[x].clear();
       }
@@ -250,13 +248,9 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
       }
       return sum(logProbs);
     }
-    
-    private int numberOfFreeParameters() {
-      return 0;
-    }
   }
   
-  public static class Par<O, M extends MeanModel> extends AGNES.Par<O> implements Parameterizer {
+  public static class Par<O, M extends MeanModel> extends AGNES.Par<O> {
     /**
      * Parameter to specify the EM cluster models to use.
      */
