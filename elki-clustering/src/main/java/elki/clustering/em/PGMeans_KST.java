@@ -32,6 +32,8 @@ import elki.data.Cluster;
 import elki.data.Clustering;
 import elki.data.NumberVector;
 import elki.data.model.MeanModel;
+import elki.data.projection.random.GaussianRandomProjectionFamily;
+import elki.data.projection.random.RandomProjectionFamily.Projection;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
 import elki.database.ids.DBIDIter;
@@ -65,6 +67,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
 
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
+  protected Random rand;
 
   /**
    *
@@ -80,6 +83,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     this.mfactory = mfactory;
     this.p = p;
     this.random = random;
+    rand = this.random.getSingleThreadedRandom();
   }
   /**
    * Performs the PG-Means algorithm on the given database.
@@ -94,21 +98,23 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
 
     // PG-Means
     boolean rejected = true;
+    EM<O, M> em = new EM<O, M>(k, delta, mfactory);
     while(rejected) {
-      EM<O, M> em = new EM<O, M>(k, delta, mfactory);
       Clustering<M> clustering = em.run(relation);
       rejected = testResult(relation, clustering, p);
       if(rejected) {
         k++;
+        System.out.println(k);
+        em = new EM<O, M>(k, delta, mfactory);
       }
       // in general, the number of clusters is within 10
-      if(k>10){
+      if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
     }
     System.out.println("k :" + k);
-    return new EM<O, M>(k, delta, mfactory).run(relation);
+    return em.run(relation);
   }
 
   /**
@@ -127,19 +133,31 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     for(int i=0; i<p; i++) {
       ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
       final int dim = RelationUtil.dimensionality(relation);
-      // generate random projection
-      double[] P = generateMultivariateGaussianRandomProjection(dim);
 
       for(Cluster<M> cluster : clusters) {
-        // TODO 제대로된 critical value구하는 식 찾기
-        // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
-        double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
-        //double critical = Math.sqrt((3/alpha)/cluster.size()); // with sufficiently large n
+        if(cluster.size() < 1) continue;
+        // TODO 제대로된 critical value구하는 식 찾기, 아래 4가지중에 
+        // 1.
+        // double dn = FastMath.sqrt(cluster.size()) - 0.01 + (0.83 / FastMath.sqrt(cluster.size())); 
+        // double critical = 0.895 / dn; // n > 30
+        // 2.
+        // double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // critical value for KS test Anpassungstest aus Miller, L.H.
+        // 3.
+        // double critical = FastMath.sqrt((3/alpha)/cluster.size()); // with sufficiently large n in literatur of PG-Means
+        // 4.
+        // double critical = 1.358 / FastMath.sqrt(cluster.size()); // if n > 35 and alpha = 0.05.
+        // 5.
+        double critical = generateCriticalValue(cluster.size());
 
+        // generate random projection
+        double[] P = generateMultivariateGaussianRandomProjection(dim);
+        P = normalize(P);
+        // TODO 여기서 애초에 데이터를 정규화 하고 그 정규화된 데이터로 mean과 cov를 만들까?
         NormalDistribution projectedNorm = projectedModel(cluster, relation, P);
         double[] projectedData = projectedData(cluster, relation, P);
         // then KS-Test with projected data and projected model
         double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
+
         if(D > critical) {
           //rejected
           return rejected = true;
@@ -147,6 +165,48 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       }
     }
     return rejected;
+  }
+  /**
+   * generate the critical value for ks test
+   * 
+   * @param n the size of sample
+   * @return critical value
+   */
+  // monte carlo simulation으로 n'= 3/alpha개의 D를 만들어서 그중에 95% quantile값을 구한다. 이렇게 구한값에 sqrt(n'/n)으로 스케일링을 하여 critical value를 구한다.
+  private double generateCriticalValue(int n){
+    double c = 0;
+    // the number of Repeat count for simulation (n' = 3/alpha)
+    int m = (int) FastMath.round(3/alpha);
+    // TODO wie soll ich diese Situation umgehen?
+    if(m >= n) {
+      throw new IllegalArgumentException("not sufficiently large n");
+    }
+    double[] Dm = new double[m];
+    // Monte Carlo Simulation
+    for(int i=0; i<m; i++){
+      double[] sample = new double[n];
+      for(int j=0; j<n; j++){
+        sample[j] = rand.nextGaussian(); // 랜덤 포인트 of 데이터
+      }
+
+      Dm[i] = ksTest(sample, new NormalDistribution(0, 1));
+    }
+    // choose the critical value (quantile(1-alpha))
+    c = quantile(Dm, (1-alpha)*100 );
+    // scaling the chosen critical value
+    return c / (FastMath.sqrt(m) / FastMath.sqrt(n));
+  }
+  /**
+   * compute the quantile 
+   * 
+   * @param data
+   * @param percentile
+   * @return qauntile of the @param data with @param percentile
+   */
+  private static double quantile(double[] data, double percentile) {
+    Arrays.sort(data);
+    int index = (int) Math.ceil(percentile / 100.0 * data.length) - 1;
+    return data[index];
   }
   /**
    * project the data set
@@ -160,12 +220,32 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     DBIDs ids = cluster.getIDs();
     double[][] data = new double[ids.size()][];
     double[] projectedData = new double[ids.size()];
+    // int dim = RelationUtil.dimensionality(relation);
+    // double[] means = new double[dim];
+    
 
     int i=0;
+    // int count=0;
+    // TODO do I have to standardize the data before the data are projected?
+    // compute means
     for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
       O vec = relation.get(iditer);
       data[i++] = vec.toArray();
+      // for(int j = 0; j < dim; j++) {
+      //   means[j] += vec.doubleValue(j);
+      // }
+      // count++;
     }
+    // Normalize mean
+    // for(int j = 0; j < dim; j++) {
+    //   means[j] /= count;
+    // }
+    // move the data to the center
+    // for(int n=0; n < data.length; n++){
+    //   for(int d=0; d < dim; d++){
+    //     data[n][d] -= means[d];
+    //   }
+    // }
     for(int j=0; j<data.length; j++) {
       projectedData[j] = transposeTimes(P, data[j]);
     }
@@ -181,12 +261,12 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    */
   private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
     CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
-    // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
     double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
+  
   /**
    * generate a multivariate gaussian random projection
    *
@@ -207,6 +287,14 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
 
     return plus(times(L,Z), randomProjectionMeans);
   }
+  // private double[] generateMultivariateGaussianRandomProjection(int dim) {
+  //   double[] matrix = new double[dim];
+  //   for(int i=0; i<matrix.length; i++){
+  //     matrix[i] = rand.nextGaussian();
+  //   }
+
+  //   return matrix;
+  // }
   /**
    * generate one dimensional random gaussian vector
    * @param n length of data
@@ -229,9 +317,6 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @return test statistic
    */
   private double ksTest(double[] sample, NormalDistribution norm) {
-//    if(sample.length < 35) {
-//      throw new IllegalArgumentException("size of data is not sufficiently large");
-//    }
     int index = 0;
     double D = 0;
 

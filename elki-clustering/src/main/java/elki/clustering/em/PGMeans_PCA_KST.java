@@ -65,6 +65,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
 
     protected EMClusterModelFactory<? super O, M> mfactory;
     protected RandomFactory random;
+    protected Random rand;
 
     /**
     *
@@ -78,6 +79,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         this.delta = delta;
         this.mfactory = mfactory;
         this.random = random;
+        rand = this.random.getSingleThreadedRandom();
     }
     /**
     * Performs the PG-Means algorithm on the given database.
@@ -92,22 +94,24 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
 
         // PG-Means
         boolean rejected = true;
+        EM<O, M> em = new EM<O, M>(k, delta, mfactory);
         while(rejected) {
-            EM<O, M> em = new EM<O, M>(k, delta, mfactory);
             Clustering<M> clustering = em.run(relation);
             rejected = testResult(relation, clustering);
             if(rejected) {
                 k++;
+                System.out.println(k);
+                em = new EM<O, M>(k, delta, mfactory);
             }
             // in general, the number of clusters is within 10
-            if(k>10){
+            if(k>100){
                 System.out.println("KS-Test is going to be wrong");
                 break;
             }
         }
 
         System.out.println("k :" + k);
-        return new EM<O, M>(k, delta, mfactory).run(relation);
+        return em.run(relation);
     }
 
     /**
@@ -127,16 +131,18 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         for(Cluster<M> cluster : clusters) {
             // TODO 제대로된 critical value구하는 식 찾기
             // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
-            double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
-            //double critical = Math.sqrt((3/alpha)/cluster.size()); // with sufficiently large n
+            //double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
+            // double critical = Math.sqrt((3/alpha)/cluster.size()); // with sufficiently large n
+            double critical = generateCriticalValue(cluster.size());
 
+            // TODO soll ich mit jedem pca vector KS test ausprobieren?
             double[] pcaFilter = runPCA(relation, cluster);
-            double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
-            int j=0;
-            for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
-                O vec = relation.get(iditer);
-                data[j++] = vec.toArray();
-            }
+            // double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
+            // int j=0;
+            // for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
+            //     O vec = relation.get(iditer);
+            //     data[j++] = vec.toArray();
+            // }
             NormalDistribution projectedNorm = projectedModel(cluster, relation, pcaFilter);
 
             double[] projectedData = projectedData(cluster, relation, pcaFilter);
@@ -151,6 +157,46 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
             }
         }
         return rejected;
+    }
+    /**
+     * generate the critical value for ks test
+     * 
+     * @param n the size of sample
+     * @return critical value
+     */
+    private double generateCriticalValue(int n){
+        double c = 0;
+        // the number of Repeat count for simulation (n' = 3/alpha)
+        int m = (int) FastMath.round(3/alpha);
+        if(m >= n) {
+        throw new IllegalArgumentException("not sufficiently large n");
+        }
+        double[] Dm = new double[m];
+        // Monte Carlo Simulation
+        for(int i=0; i<m; i++){
+        double[] sample = new double[n];
+        for(int j=0; j<n; j++){
+            sample[j] = rand.nextGaussian();
+        }
+
+        Dm[i] = ksTest(sample, new NormalDistribution(0, 1));
+        }
+        // choose the critical value (quantile(1-alpha))
+        c = quantile(Dm, (1-alpha)*100 );
+        // scaling the chosen critical value
+        return c / (FastMath.sqrt(m) / FastMath.sqrt(n));
+    }
+    /**
+     * compute the quantile 
+     * 
+     * @param data
+     * @param percentile
+     * @return qauntile of the @param data with @param percentile
+     */
+    private static double quantile(double[] data, double percentile) {
+        Arrays.sort(data);
+        int index = (int) Math.ceil(percentile / 100.0 * data.length) - 1;
+        return data[index];
     }
     /**
      * run PCA using ELKI
@@ -184,12 +230,22 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         DBIDs ids = cluster.getIDs();
         double[][] data = new double[ids.size()][];
         double[] projectedData = new double[ids.size()];
+        // CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
+        // double[] mean = cov.getMeanVector();
+        // int dim = RelationUtil.dimensionality(relation);
 
         int i=0;
+        // TODO do I have to standardize the data before the data are projected?
         for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
             O vec = relation.get(iditer);
             data[i++] = vec.toArray();
         }
+        // move the data to the center
+        // for(int n=0; n < data.length; n++){
+        //     for(int d=0; d < dim; d++){
+        //     data[n][d] -= mean[d];
+        //     }
+        // }
         for(int j=0; j<data.length; j++) {
             projectedData[j] = transposeTimes(P, data[j]);
         }
@@ -204,7 +260,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
      * @return projected model
      */
     private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
-        CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
+        CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
         double[][] mat = cov.makePopulationMatrix();
         double projectedMean = transposeTimes(P, cov.getMeanVector());
         double projectedVar = transposeTimesTimes(P, mat, P);

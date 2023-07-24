@@ -100,9 +100,10 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
       rejected = testResult(relation, clustering, p);
       if(rejected) {
         k++;
+        System.out.println(k);
       }
       // in general, the number of clusters is within 10
-      if(k>10){
+      if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
@@ -137,6 +138,7 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
       }
 
       double[] P = generateMultivariateGaussianRandomProjection(randomProjectionMeans, randomProjectionCov);
+      P = normalize(P);
 
       for(Cluster<M> cluster : clusters) {
         double[] projectedData = projectedData(cluster, relation, P);
@@ -167,6 +169,7 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
     double[] projectedData = new double[ids.size()];
 
     int i=0;
+    // TODO standardize?
     for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
       O vec = relation.get(iditer);
       data[i++] = vec.toArray();

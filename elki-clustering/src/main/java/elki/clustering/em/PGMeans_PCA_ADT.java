@@ -98,7 +98,7 @@ public class PGMeans_PCA_ADT<O extends NumberVector, M extends MeanModel> implem
         k++;
       }
       // in general, the number of clusters is within 10
-      if(k>10){
+      if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
@@ -127,7 +127,9 @@ public class PGMeans_PCA_ADT<O extends NumberVector, M extends MeanModel> implem
     for(Cluster<M> cluster : clusters) {
       double[] pcaFilter = runPCA(relation, cluster);
       double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
+
       int j=0;
+      // TODO data standardize?
       for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
         O vec = relation.get(iditer);
         data[j++] = vec.toArray();
