@@ -240,7 +240,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
             O vec = relation.get(iditer);
             data[i++] = vec.toArray();
         }
-        // move the data to the center
+        // move the data to the center : 여기서 하면 model projection할때도 해줘야한다
         // for(int n=0; n < data.length; n++){
         //     for(int d=0; d < dim; d++){
         //     data[n][d] -= mean[d];

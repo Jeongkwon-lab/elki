@@ -239,7 +239,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
       CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster);
       double[][] mat = cov.makePopulationMatrix();
       double[] means = cov.getMeanVector();
-      MultivariateGaussianModel model = new MultivariateGaussianModel(1./r, means, mat);
+      MultivariateGaussianModel model = new MultivariateGaussianModel(1./means.length, means, mat);
       double[] logProbs = new double[cluster.size()];
       int i = 0;
       for(DBIDIter iditer = cluster.iter(); iditer.valid(); iditer.advance()){

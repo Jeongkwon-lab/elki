@@ -28,6 +28,7 @@ import java.util.Random;
 import elki.clustering.ClusteringAlgorithm;
 import elki.clustering.em.models.EMClusterModelFactory;
 import elki.clustering.em.models.MultivariateGaussianModelFactory;
+import elki.clustering.kmeans.quality.AbstractKMeansQualityMeasure;
 import elki.data.Cluster;
 import elki.data.Clustering;
 import elki.data.NumberVector;
@@ -40,6 +41,7 @@ import elki.database.ids.DBIDIter;
 import elki.database.ids.DBIDs;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
+import elki.distance.minkowski.EuclideanDistance;
 import elki.logging.Logging;
 import elki.math.linearalgebra.CholeskyDecomposition;
 import elki.math.linearalgebra.CovarianceMatrix;
@@ -68,6 +70,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
   protected Random rand;
+  protected double critical;
 
   /**
    *
@@ -78,12 +81,13 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param p number of projections
    * @param random for Random Projection
    */
-  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random){
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double critical){
     this.delta = delta;
     this.mfactory = mfactory;
     this.p = p;
     this.random = random;
     rand = this.random.getSingleThreadedRandom();
+    this.critical = critical;
   }
   /**
    * Performs the PG-Means algorithm on the given database.
@@ -99,22 +103,33 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     // PG-Means
     boolean rejected = true;
     EM<O, M> em = new EM<O, M>(k, delta, mfactory);
+    Clustering<M> clustering = em.run(relation);;
     while(rejected) {
-      Clustering<M> clustering = em.run(relation);
       rejected = testResult(relation, clustering, p);
       if(rejected) {
         k++;
         System.out.println(k);
-        em = new EM<O, M>(k, delta, mfactory);
       }
       // in general, the number of clusters is within 10
       if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
+      // TODO repeat em algorithm 10times and then choose one result that has best Likelihood.
+      double[] loglikelihood = new double[10];
+      ArrayList<Clustering<M>> clusterings = new ArrayList<>();
+      em = new EM<O, M>(k, delta, mfactory);
+      for(int i=0; i<10; i++){
+        Clustering<M> c = em.run(relation);
+        loglikelihood[i] = AbstractKMeansQualityMeasure.logLikelihood(relation, c, EuclideanDistance.STATIC);
+        clusterings.add(i, c);
+      }
+      int maxIdx = argmax(loglikelihood);
+      clustering = clusterings.get(maxIdx);
     }
+    
     System.out.println("k :" + k);
-    return em.run(relation);
+    return clustering;
   }
 
   /**
@@ -129,70 +144,57 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    */
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
     boolean rejected = false;
+    ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
+    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
+    double[][] mat = cov.makePopulationMatrix();
+    double[] means = cov.getMeanVector();
 
     for(int i=0; i<p; i++) {
-      ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
       final int dim = RelationUtil.dimensionality(relation);
-
-      for(Cluster<M> cluster : clusters) {
-        if(cluster.size() < 1) continue;
-        // TODO 제대로된 critical value구하는 식 찾기, 아래 4가지중에 
-        // 1.
-        // double dn = FastMath.sqrt(cluster.size()) - 0.01 + (0.83 / FastMath.sqrt(cluster.size())); 
-        // double critical = 0.895 / dn; // n > 30
-        // 2.
-        // double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // critical value for KS test Anpassungstest aus Miller, L.H.
-        // 3.
-        // double critical = FastMath.sqrt((3/alpha)/cluster.size()); // with sufficiently large n in literatur of PG-Means
-        // 4.
-        // double critical = 1.358 / FastMath.sqrt(cluster.size()); // if n > 35 and alpha = 0.05.
-        // 5.
-        double critical = generateCriticalValue(cluster.size());
-
-        // generate random projection
-        double[] P = generateMultivariateGaussianRandomProjection(dim);
-        P = normalize(P);
-        // TODO 여기서 애초에 데이터를 정규화 하고 그 정규화된 데이터로 mean과 cov를 만들까?
-        NormalDistribution projectedNorm = projectedModel(cluster, relation, P);
-        double[] projectedData = projectedData(cluster, relation, P);
-        // then KS-Test with projected data and projected model
-        double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
-
-        if(D > critical) {
-          //rejected
-          return rejected = true;
-        }
+      // generate random projection
+      double[] P = generateGaussianRandomProjection(dim);
+      P = normalize(P);
+      // TODO 여기서 애초에 데이터를 정규화 하고 그 정규화된 데이터로 mean과 cov를 만들까?
+      // NormalDistribution projectedModel = projectedModel(relation, P);
+      NormalDistribution projectedModel = projectedModel(means, mat, P);
+      double[] projectedData = projectedData(relation, P);
+      //double c = generateCriticalValue(relation, projectedData, projectedNorm);
+      // then KS-Test with projected data and projected model
+      double D = ksTest(projectedData, projectedModel); // test statistic of KS-Test
+      if(D > critical) {
+        //rejected
+        return rejected = true;
       }
+      
     }
     return rejected;
   }
   /**
    * generate the critical value for ks test
    * 
-   * @param n the size of sample
    * @return critical value
    */
-  // monte carlo simulation으로 n'= 3/alpha개의 D를 만들어서 그중에 95% quantile값을 구한다. 이렇게 구한값에 sqrt(n'/n)으로 스케일링을 하여 critical value를 구한다.
-  private double generateCriticalValue(int n){
+  private double generateCriticalValue(Relation<O> relation, double[] projectedData, NormalDistribution projectedModel){
     double c = 0;
+    final int n = relation.size();
     // the number of Repeat count for simulation (n' = 3/alpha)
     int m = (int) FastMath.round(3/alpha);
-    // TODO wie soll ich diese Situation umgehen?
     if(m >= n) {
       throw new IllegalArgumentException("not sufficiently large n");
     }
-    double[] Dm = new double[m];
+    double[] Dn = new double[n];
     // Monte Carlo Simulation
-    for(int i=0; i<m; i++){
-      double[] sample = new double[n];
-      for(int j=0; j<n; j++){
-        sample[j] = rand.nextGaussian(); // 랜덤 포인트 of 데이터
+    for(int i=0; i<n; i++){
+      // m sample points
+      double[] sample = new double[m];
+      for(int j=0; j<m; j++){
+          sample[j] = projectedData[rand.nextInt(projectedData.length)];
       }
 
-      Dm[i] = ksTest(sample, new NormalDistribution(0, 1));
+      Dn[i] = ksTest(sample, projectedModel);
     }
     // choose the critical value (quantile(1-alpha))
-    c = quantile(Dm, (1-alpha)*100 );
+    c = quantile(Dn, (1-alpha)*100 );
     // scaling the chosen critical value
     return c / (FastMath.sqrt(m) / FastMath.sqrt(n));
   }
@@ -216,19 +218,17 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param P projection
    * @return one dimensional projected data
    */
-  private double[] projectedData(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
-    DBIDs ids = cluster.getIDs();
-    double[][] data = new double[ids.size()][];
-    double[] projectedData = new double[ids.size()];
+  private double[] projectedData(Relation<O> relation, double[] P) {
+    double[][] data = new double[relation.size()][];
+    double[] projectedData = new double[relation.size()];
     // int dim = RelationUtil.dimensionality(relation);
     // double[] means = new double[dim];
     
-
     int i=0;
     // int count=0;
     // TODO do I have to standardize the data before the data are projected?
     // compute means
-    for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
+    for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
       O vec = relation.get(iditer);
       data[i++] = vec.toArray();
       // for(int j = 0; j < dim; j++) {
@@ -259,21 +259,26 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param P projection
    * @return projected model
    */
-  private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
+  private NormalDistribution projectedModel(Relation<O> relation, double[] P) {
+    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
     double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
+  private NormalDistribution projectedModel(double[] means, double[][] cov, double[] P) {
+    double projectedMean = transposeTimes(P, means);
+    double projectedVar = transposeTimesTimes(P, cov, P);
+    return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
+  }
   
   /**
-   * generate a multivariate gaussian random projection
+   * generate a gaussian random projection
    *
-   * @param dim number of dimensions
-   * @return multivariate gaussian random projection
+   * @param dim number of dimensions for input data
+   * @return gaussian random projection
    */
-  private double[] generateMultivariateGaussianRandomProjection(int dim) {
+  private double[] generateGaussianRandomProjection(int dim) {
     // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
     double[] randomProjectionMeans = new double[dim];
     double[][] randomProjectionCov = new double[dim][dim];
@@ -287,13 +292,12 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
 
     return plus(times(L,Z), randomProjectionMeans);
   }
-  // private double[] generateMultivariateGaussianRandomProjection(int dim) {
-  //   double[] matrix = new double[dim];
-  //   for(int i=0; i<matrix.length; i++){
-  //     matrix[i] = rand.nextGaussian();
+  // private double[] generateGaussianRandomProjection(int dim) {
+  //   double[] projection = new double[dim];
+  //   for(int i=0; i<projection.length; i++){
+  //     projection[i] = rand.nextGaussian();
   //   }
-
-  //   return matrix;
+  //   return projection;
   // }
   /**
    * generate one dimensional random gaussian vector
@@ -330,7 +334,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       while (index < sample.length && sample[index] == x) {
         index++;
       }
-      double empirical_cdf = ((double) index + 1.) / (sample.length + 1.);
+      double empirical_cdf = ((double) index) / (sample.length);
       D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
     }
     return D;
@@ -387,6 +391,11 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     public static final OptionID SEED_ID = new OptionID("pgmeans.seed", "Random seed for splitting clusters.");
 
     /**
+     * Critical value for the Anderson-Darling-Test
+     */
+    public static final OptionID CRITICAL_ID = new OptionID("gmeans.critical", "Critical value for the Anderson Darling test. \u03B1=0.0001 is 1.8692, \u03B1=0.005 is 1.159 \u03B1=0.01 is 1.0348");
+
+    /**
      * Stopping threshold
      */
     protected double delta;
@@ -426,6 +435,11 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
      */
     protected RandomFactory random;
 
+    /**
+     * Critical value
+     */
+    protected double critical;
+
 
     @Override
     public void configure(Parameterization config) {
@@ -452,11 +466,14 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
           .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_INT) //
       		.grab(config, x -> p = x); //
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
+      new DoubleParameter(CRITICAL_ID) //
+          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
+          .grab(config, x -> critical = x);
     }
 
     @Override
     public PGMeans_KST make() {
-      return new PGMeans_KST(delta, mfactory, p, random);
+      return new PGMeans_KST(delta, mfactory, p, random, critical);
     }
   }
 }
