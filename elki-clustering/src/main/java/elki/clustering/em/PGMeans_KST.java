@@ -156,6 +156,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
       int j=0;
       for(Cluster<M> cluster : clusters){
+        if(cluster.size() < 1) continue;
         projectedSamples[j] = projectedData(relation, cluster, P);
         projectedNorms[j] = projectedModel(relation, cluster, P);
         j++;
@@ -202,6 +203,9 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @return projected model through projection @param P 
    */
   private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
+    if(cluster.getIDs().size() < 1){
+      System.out.println("Error?");
+    }
     CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
     // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
     double[][] mat = cov.makePopulationMatrix();
@@ -291,18 +295,22 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     double D = 0;
 
     for(int i=0; i<sample.length; i++){
+      if(sample[i] == null || norm[i] == null){
+        System.out.println("null point error?");
+        continue;
+      }
       int index = 0;
       Arrays.sort(sample[i]);
       while(index < sample[i].length) {
         double x = sample[i][index];
-        double model_cdf = norm[i].cdf(x);
+        double model_cdf = norm[i].cdf(x); // TODO null point exception error : dafür habe ich die obere IF Anweisung hinzugefügt.
         // Advance on first curve
         index++;
         // Handle multiple points with same x:
         while (index < sample[i].length && sample[i][index] == x) {
           index++;
         }
-        double empirical_cdf = ((double) index) / (sample.length);
+        double empirical_cdf = ((double) index) / (sample[i].length);
         D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
       }
     }
