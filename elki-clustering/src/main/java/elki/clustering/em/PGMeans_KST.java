@@ -115,7 +115,8 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
         System.out.println("KS-Test is going to be wrong");
         break;
       }
-      // TODO repeat em algorithm 10times and then choose one result that has best Likelihood.
+      // repeat em algorithm 10times and then choose one result that has best Likelihood.
+      // TODO because of 10 time repeat, there is a error : "A cluster has degenerated, likely due to lack of variance in a subset of the data or too extreme magnitude differences. The algorithm will likely stop without converging, and fail to produce a good fit."
       double[] loglikelihood = new double[10];
       ArrayList<Clustering<M>> clusterings = new ArrayList<>();
       em = new EM<O, M>(k, delta, mfactory);
@@ -143,132 +144,69 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @return true if the test is rejected
    */
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
-    boolean rejected = false;
     ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
-    double[][] mat = cov.makePopulationMatrix();
-    double[] means = cov.getMeanVector();
 
     for(int i=0; i<p; i++) {
       final int dim = RelationUtil.dimensionality(relation);
       // generate random projection
       double[] P = generateGaussianRandomProjection(dim);
       P = normalize(P);
-      // TODO 여기서 애초에 데이터를 정규화 하고 그 정규화된 데이터로 mean과 cov를 만들까?
-      // NormalDistribution projectedModel = projectedModel(relation, P);
-      NormalDistribution projectedModel = projectedModel(means, mat, P);
-      double[] projectedData = projectedData(relation, P);
-      //double c = generateCriticalValue(relation, projectedData, projectedNorm);
-      // then KS-Test with projected data and projected model
-      double D = ksTest(projectedData, projectedModel); // test statistic of KS-Test
+      
+      double[][] projectedSamples = new double[clusters.size()][relation.size()];
+      NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
+      int j=0;
+      for(Cluster<M> cluster : clusters){
+        projectedSamples[j] = projectedData(relation, cluster, P);
+        projectedNorms[j] = projectedModel(relation, cluster, P);
+        j++;
+      }
+      double D = ksTest(projectedSamples, projectedNorms);
       if(D > critical) {
         //rejected
-        return rejected = true;
+        return true;
       }
       
     }
-    return rejected;
+    return false;
   }
+  
   /**
-   * generate the critical value for ks test
+   * project the data that is in @param cluster
    * 
-   * @return critical value
+   * @param relation relation
+   * @param cluster cluster
+   * @param P is a projection that the data can be projected through
+   * @return projected data of the data in @param cluster through @param P projection
    */
-  private double generateCriticalValue(Relation<O> relation, double[] projectedData, NormalDistribution projectedModel){
-    double c = 0;
-    final int n = relation.size();
-    // the number of Repeat count for simulation (n' = 3/alpha)
-    int m = (int) FastMath.round(3/alpha);
-    if(m >= n) {
-      throw new IllegalArgumentException("not sufficiently large n");
-    }
-    double[] Dn = new double[n];
-    // Monte Carlo Simulation
-    for(int i=0; i<n; i++){
-      // m sample points
-      double[] sample = new double[m];
-      for(int j=0; j<m; j++){
-          sample[j] = projectedData[rand.nextInt(projectedData.length)];
-      }
+  private double[] projectedData(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
+    DBIDs ids = cluster.getIDs();
+    double[][] data = new double[ids.size()][];
+    double[] projectedData = new double[ids.size()];
 
-      Dn[i] = ksTest(sample, projectedModel);
-    }
-    // choose the critical value (quantile(1-alpha))
-    c = quantile(Dn, (1-alpha)*100 );
-    // scaling the chosen critical value
-    return c / (FastMath.sqrt(m) / FastMath.sqrt(n));
-  }
-  /**
-   * compute the quantile 
-   * 
-   * @param data
-   * @param percentile
-   * @return qauntile of the @param data with @param percentile
-   */
-  private static double quantile(double[] data, double percentile) {
-    Arrays.sort(data);
-    int index = (int) Math.ceil(percentile / 100.0 * data.length) - 1;
-    return data[index];
-  }
-  /**
-   * project the data set
-   *
-   * @param cluster
-   * @param relation
-   * @param P projection
-   * @return one dimensional projected data
-   */
-  private double[] projectedData(Relation<O> relation, double[] P) {
-    double[][] data = new double[relation.size()][];
-    double[] projectedData = new double[relation.size()];
-    // int dim = RelationUtil.dimensionality(relation);
-    // double[] means = new double[dim];
-    
     int i=0;
-    // int count=0;
-    // TODO do I have to standardize the data before the data are projected?
-    // compute means
-    for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
+    for(DBIDIter iditer = ids.iter(); iditer.valid(); iditer.advance()) {
       O vec = relation.get(iditer);
       data[i++] = vec.toArray();
-      // for(int j = 0; j < dim; j++) {
-      //   means[j] += vec.doubleValue(j);
-      // }
-      // count++;
     }
-    // Normalize mean
-    // for(int j = 0; j < dim; j++) {
-    //   means[j] /= count;
-    // }
-    // move the data to the center
-    // for(int n=0; n < data.length; n++){
-    //   for(int d=0; d < dim; d++){
-    //     data[n][d] -= means[d];
-    //   }
-    // }
     for(int j=0; j<data.length; j++) {
       projectedData[j] = transposeTimes(P, data[j]);
     }
     return projectedData;
   }
   /**
-   * project model
-   *
-   * @param cluster
-   * @param relation
+   * project the model of the data for @param cluster
+   * 
+   * @param relation relation
+   * @param cluster cluster
    * @param P projection
-   * @return projected model
+   * @return projected model through projection @param P 
    */
-  private NormalDistribution projectedModel(Relation<O> relation, double[] P) {
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, relation.getDBIDs());
+  private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
+    CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
+    // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
     double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
-    return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
-  }
-  private NormalDistribution projectedModel(double[] means, double[][] cov, double[] P) {
-    double projectedMean = transposeTimes(P, means);
-    double projectedVar = transposeTimesTimes(P, cov, P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
   
@@ -278,27 +216,30 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param dim number of dimensions for input data
    * @return gaussian random projection
    */
-  private double[] generateGaussianRandomProjection(int dim) {
-    // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
-    double[] randomProjectionMeans = new double[dim];
-    double[][] randomProjectionCov = new double[dim][dim];
-    for(int i=0; i<dim; i++) {
-      randomProjectionCov[i][i] = 1.0/dim;
-    }
-
-    CholeskyDecomposition chol = new CholeskyDecomposition(randomProjectionCov);
-    double[][] L = chol.getL();
-    double[] Z = generateRandomGaussian(L[0].length);
-
-    return plus(times(L,Z), randomProjectionMeans);
-  }
+  // TODO 둘중 어떤거 써야할지
   // private double[] generateGaussianRandomProjection(int dim) {
-  //   double[] projection = new double[dim];
-  //   for(int i=0; i<projection.length; i++){
-  //     projection[i] = rand.nextGaussian();
+  //   // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
+  //   double[] randomProjectionMeans = new double[dim];
+  //   double[][] randomProjectionCov = new double[dim][dim];
+  //   for(int i=0; i<dim; i++) {
+  //     randomProjectionCov[i][i] = 1.0/dim;
   //   }
-  //   return projection;
+
+  //   CholeskyDecomposition chol = new CholeskyDecomposition(randomProjectionCov);
+  //   double[][] L = chol.getL();
+  //   double[] Z = generateRandomGaussian(L[0].length);
+
+  //   return plus(times(L,Z), randomProjectionMeans);
   // }
+  private double[] generateGaussianRandomProjection(int dim) {
+    double[] projection = new double[dim];
+    for(int i=0; i<projection.length; i++){
+      projection[i] = rand.nextGaussian();
+    }
+    return projection;
+  }
+
+
   /**
    * generate one dimensional random gaussian vector
    * @param n length of data
@@ -314,7 +255,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
   }
 
   /**
-   * KS Test
+   * KS Test for one sample
    *
    * @param sample data
    * @param norm normal distribution
@@ -337,6 +278,35 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       double empirical_cdf = ((double) index) / (sample.length);
       D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
     }
+    return D;
+  }
+  /**
+   * KS-tests on the reduced data and models in one dimension. 
+   * 
+   * @param sample sample data reduced to one dimension, stored per cluster in a one-dimensional array.
+   * @param norm normal distribution for the reduced models that are stored per cluster in array.
+   * @return maximum value of Dn
+   */
+  private double ksTest(double[][] sample, NormalDistribution[] norm) {
+    double D = 0;
+
+    for(int i=0; i<sample.length; i++){
+      int index = 0;
+      Arrays.sort(sample[i]);
+      while(index < sample[i].length) {
+        double x = sample[i][index];
+        double model_cdf = norm[i].cdf(x);
+        // Advance on first curve
+        index++;
+        // Handle multiple points with same x:
+        while (index < sample[i].length && sample[i][index] == x) {
+          index++;
+        }
+        double empirical_cdf = ((double) index) / (sample.length);
+        D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
+      }
+    }
+    
     return D;
   }
 

@@ -314,7 +314,7 @@ public class MBHAC<O extends NumberVector> implements HierarchicalClusteringAlgo
    * @return Likelihood ratio test statistic
    */
   private double likelihoodRatioTestStatistic(Relation<O> relation, ModifiableDBIDs cluster1, ModifiableDBIDs cluster2, ModifiableDBIDs mergedCluster) {
-    //check if clusters[x] is a singleton and cluster[y] is singleton
+    //check if cluster1 is a singleton and cluster2 is singleton
     if(isSingleton(cluster1) && isSingleton(cluster2)) {
       r++;
       return 2.*logLikelihood(relation, mergedCluster);
