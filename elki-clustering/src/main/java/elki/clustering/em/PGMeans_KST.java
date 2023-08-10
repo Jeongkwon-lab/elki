@@ -115,18 +115,9 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
         System.out.println("KS-Test is going to be wrong");
         break;
       }
-      // repeat em algorithm 10times and then choose one result that has best Likelihood.
-      // TODO because of 10 time repeat, there is a error : "A cluster has degenerated, likely due to lack of variance in a subset of the data or too extreme magnitude differences. The algorithm will likely stop without converging, and fail to produce a good fit."
-      double[] loglikelihood = new double[10];
-      ArrayList<Clustering<M>> clusterings = new ArrayList<>();
-      em = new EM<O, M>(k, delta, mfactory);
-      for(int i=0; i<10; i++){
-        Clustering<M> c = em.run(relation);
-        loglikelihood[i] = AbstractKMeansQualityMeasure.logLikelihood(relation, c, EuclideanDistance.STATIC);
-        clusterings.add(i, c);
-      }
-      int maxIdx = argmax(loglikelihood);
-      clustering = clusterings.get(maxIdx);
+      //TODO ?? repeat expectation-maximization 10times (maxiter=10) and then choose one result that has best Likelihood (that is EM-algorithm).
+      em = new EM<O, M>(k, delta, mfactory, 10, false);
+      clustering = em.run(relation);
     }
     
     System.out.println("k :" + k);
@@ -156,7 +147,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
       int j=0;
       for(Cluster<M> cluster : clusters){
-        if(cluster.size() < 1) continue;
+        if(cluster.size() < 1) continue; 
         projectedSamples[j] = projectedData(relation, cluster, P);
         projectedNorms[j] = projectedModel(relation, cluster, P);
         j++;
@@ -203,11 +194,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @return projected model through projection @param P 
    */
   private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
-    if(cluster.getIDs().size() < 1){
-      System.out.println("Error?");
-    }
     CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
-    // TODO ERROR sometimes if the weight is too low, because there is not ids from cluster.getIDs()?
     double[][] mat = cov.makePopulationMatrix();
     double projectedMean = transposeTimes(P, cov.getMeanVector());
     double projectedVar = transposeTimesTimes(P, mat, P);
@@ -220,7 +207,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param dim number of dimensions for input data
    * @return gaussian random projection
    */
-  // TODO 둘중 어떤거 써야할지
+  // TODO which one ?
   // private double[] generateGaussianRandomProjection(int dim) {
   //   // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
   //   double[] randomProjectionMeans = new double[dim];
@@ -295,15 +282,14 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     double D = 0;
 
     for(int i=0; i<sample.length; i++){
-      if(sample[i] == null || norm[i] == null){
-        System.out.println("null point error?");
-        continue;
-      }
+      // if cluster.size() < 1, to avoid the null point exception.
+      if(sample[i] == null || norm[i] == null) continue;
+
       int index = 0;
       Arrays.sort(sample[i]);
       while(index < sample[i].length) {
         double x = sample[i][index];
-        double model_cdf = norm[i].cdf(x); // TODO null point exception error : dafür habe ich die obere IF Anweisung hinzugefügt.
+        double model_cdf = norm[i].cdf(x); 
         // Advance on first curve
         index++;
         // Handle multiple points with same x:

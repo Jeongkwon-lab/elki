@@ -256,7 +256,7 @@ public class PGMeans_ADT<O extends NumberVector, M extends MeanModel> implements
     /**
      * Critical value for the Anderson-Darling-Test
      */
-    public static final OptionID CRITICAL_ID = new OptionID("gmeans.critical", "Critical value for the Anderson Darling test. \u03B1=0.0001 is 1.8692, \u03B1=0.005 is 1.159 \u03B1=0.01 is 1.0348");
+    public static final OptionID CRITICAL_ID = new OptionID("pgmeans.critical", "Critical value for the Anderson Darling test. \u03B1=0.0001 is 1.8692, \u03B1=0.005 is 1.159 \u03B1=0.01 is 1.0348");
 
 
     /**
