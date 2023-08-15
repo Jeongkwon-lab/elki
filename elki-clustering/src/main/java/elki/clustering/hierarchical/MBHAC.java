@@ -259,6 +259,7 @@ public class MBHAC<O extends NumberVector> implements HierarchicalClusteringAlgo
     // Repeat until everything merged, except the desired number of clusters:
     FiniteProgress prog = LOG.isVerbose() ? new FiniteProgress("Agglomerative clustering", size - 1, LOG) : null;
     for(int i = 1; i < size; i++) {
+      System.out.println(i + ". merging");
       merge(relation, clusters, cidx, builder, scratch);
       LOG.incrementProcessed(prog);
       System.out.println(i + ". merging is done");

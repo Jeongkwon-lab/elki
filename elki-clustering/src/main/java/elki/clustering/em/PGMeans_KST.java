@@ -28,22 +28,17 @@ import java.util.Random;
 import elki.clustering.ClusteringAlgorithm;
 import elki.clustering.em.models.EMClusterModelFactory;
 import elki.clustering.em.models.MultivariateGaussianModelFactory;
-import elki.clustering.kmeans.quality.AbstractKMeansQualityMeasure;
 import elki.data.Cluster;
 import elki.data.Clustering;
 import elki.data.NumberVector;
 import elki.data.model.MeanModel;
-import elki.data.projection.random.GaussianRandomProjectionFamily;
-import elki.data.projection.random.RandomProjectionFamily.Projection;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
 import elki.database.ids.DBIDIter;
 import elki.database.ids.DBIDs;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
-import elki.distance.minkowski.EuclideanDistance;
 import elki.logging.Logging;
-import elki.math.linearalgebra.CholeskyDecomposition;
 import elki.math.linearalgebra.CovarianceMatrix;
 import elki.math.statistics.distribution.NormalDistribution;
 import elki.utilities.optionhandling.OptionID;
@@ -65,7 +60,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
   protected int k = 1;
   protected double delta;
   protected int p; // number of projections
-  protected double alpha = 0.05; // significant level 0.05, dicuss: 프로젝트 추후에 알파에 따른 변화를 연구해봐도 좋다
+  protected double alpha; // significant level
 
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
@@ -80,15 +75,20 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param mfactory EM cluster model factory
    * @param p number of projections
    * @param random for Random Projection
+   * @param alpha confidence for ks test
    */
-  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double critical){
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, double critical){
     this.delta = delta;
     this.mfactory = mfactory;
     this.p = p;
     this.random = random;
     rand = this.random.getSingleThreadedRandom();
+    this.alpha = alpha;
     this.critical = critical;
   }
+
+  // TODO to compute the critical value instead of input of the value direct
+
   /**
    * Performs the PG-Means algorithm on the given database.
    *
@@ -110,17 +110,18 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
         k++;
         System.out.println(k);
       }
-      // in general, the number of clusters is within 10
+      // in general, the number of clusters is within 100 for small data
       if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
       //TODO ?? repeat expectation-maximization 10times (maxiter=10) and then choose one result that has best Likelihood (that is EM-algorithm).
-      em = new EM<O, M>(k, delta, mfactory, 10, false);
-      clustering = em.run(relation);
+      EM<O, M> em_new = new EM<O, M>(k, delta, mfactory, 10, false);
+      clustering = em_new.run(relation);
     }
     
     System.out.println("k :" + k);
+
     return clustering;
   }
 
@@ -129,7 +130,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * and project the dataset and model,
    * Then, KS-test
    *
-   * @param relation
+   * @param relation relation
    * @param clustering the result of em with k
    * @param p number of projections
    * @return true if the test is rejected
@@ -151,6 +152,12 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
         projectedSamples[j] = projectedData(relation, cluster, P);
         projectedNorms[j] = projectedModel(relation, cluster, P);
         j++;
+
+        // double[] projectedData = projectedData(relation, cluster, P);
+        // NormalDistribution projectedNorm = projectedModel(relation, cluster, P);
+        // double test_D = ksTest(projectedData, projectedNorm);
+        // double c = 0.886 / FastMath.sqrt(cluster.size());
+        // if(test_D > c) return true;
       }
       double D = ksTest(projectedSamples, projectedNorms);
       if(D > critical) {
@@ -161,7 +168,6 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     }
     return false;
   }
-  
   /**
    * project the data that is in @param cluster
    * 
@@ -357,7 +363,12 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     /**
      * Critical value for the Anderson-Darling-Test
      */
-    public static final OptionID CRITICAL_ID = new OptionID("gmeans.critical", "Critical value for the Anderson Darling test. \u03B1=0.0001 is 1.8692, \u03B1=0.005 is 1.159 \u03B1=0.01 is 1.0348");
+    public static final OptionID CRITICAL_ID = new OptionID("pgmeans.critical", "Critical value for the Kolmogorov Smirnov test.");
+
+    /**
+     * Critical value for the Anderson-Darling-Test
+     */
+    public static final OptionID ALPHA_ID = new OptionID("pgmeans.alpha", "Confidence value for the Kolmogorov Smirnov test.");
 
     /**
      * Stopping threshold
@@ -404,6 +415,11 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
      */
     protected double critical;
 
+    /**
+     * confidence alpha
+     */
+    protected double alpha;
+
 
     @Override
     public void configure(Parameterization config) {
@@ -433,11 +449,14 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       new DoubleParameter(CRITICAL_ID) //
           .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
           .grab(config, x -> critical = x);
+      new DoubleParameter(ALPHA_ID) //
+          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
+          .grab(config, x -> alpha = x);
     }
 
     @Override
     public PGMeans_KST make() {
-      return new PGMeans_KST(delta, mfactory, p, random, critical);
+      return new PGMeans_KST(delta, mfactory, p, random, alpha, critical);
     }
   }
 }

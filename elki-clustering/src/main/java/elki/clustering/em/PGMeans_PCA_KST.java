@@ -37,7 +37,6 @@ import elki.data.type.TypeUtil;
 import elki.database.ids.DBIDIter;
 import elki.database.ids.DBIDs;
 import elki.database.relation.Relation;
-import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
 import elki.math.linearalgebra.CovarianceMatrix;
 import elki.math.linearalgebra.pca.PCAResult;
@@ -66,6 +65,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
     protected EMClusterModelFactory<? super O, M> mfactory;
     protected RandomFactory random;
     protected Random rand;
+    protected double critical;
 
     /**
     *
@@ -75,11 +75,12 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
     * @param mfactory EM cluster model factory
     * @param mprojection Random projection family
     */
-    public PGMeans_PCA_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, RandomFactory random){
+    public PGMeans_PCA_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, RandomFactory random, double critical){
         this.delta = delta;
         this.mfactory = mfactory;
         this.random = random;
         rand = this.random.getSingleThreadedRandom();
+        this.critical = critical;
     }
     /**
     * Performs the PG-Means algorithm on the given database.
@@ -89,29 +90,32 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
     */
     public Clustering<M> run(Relation<O> relation) {
         if(relation.size() == 0) {
-            throw new IllegalArgumentException("database empty: must contain elements");
+          throw new IllegalArgumentException("database empty: must contain elements");
         }
-
+    
         // PG-Means
         boolean rejected = true;
         EM<O, M> em = new EM<O, M>(k, delta, mfactory);
+        Clustering<M> clustering = em.run(relation);;
         while(rejected) {
-            Clustering<M> clustering = em.run(relation);
-            rejected = testResult(relation, clustering);
-            if(rejected) {
-                k++;
-                System.out.println(k);
-                em = new EM<O, M>(k, delta, mfactory);
-            }
-            // in general, the number of clusters is within 10
-            if(k>100){
-                System.out.println("KS-Test is going to be wrong");
-                break;
-            }
+          rejected = testResult(relation, clustering);
+          if(rejected) {
+            k++;
+            System.out.println(k);
+          }
+          // in general, the number of clusters is within 100 for small data
+          if(k>100){
+            System.out.println("KS-Test is going to be wrong");
+            break;
+          }
+          //TODO ?? repeat expectation-maximization 10times (maxiter=10) and then choose one result that has best Likelihood (that is EM-algorithm).
+          em = new EM<O, M>(k, delta, mfactory, 10, false);
+          clustering = em.run(relation);
         }
-
+        
         System.out.println("k :" + k);
-        return em.run(relation);
+    
+        return clustering;
     }
 
     /**
@@ -124,39 +128,46 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
      * @return true if the test is rejected
      */
     private boolean testResult(Relation<O> relation, Clustering<M> clustering) {
-        boolean rejected = false;
         // pca depends on the variance of cluster. So we have not to repeat the test p-times
         ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
 
+        double[][] projectedSamples = new double[clusters.size()][relation.size()];
+        NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
+        int j=0;
+
+        // TODO soll ich mit jedem pca vector KS test ausprobieren?
+        double[] pcaFilter = runPCA(relation);
+        pcaFilter = normalize(pcaFilter);
+
         for(Cluster<M> cluster : clusters) {
+            if(cluster.size() < 2) continue;
             // TODO 제대로된 critical value구하는 식 찾기
             // 0.886 / Math.sqrt(n) is from Lilliefors test table /// monte carlo -> lilliefors test table -> critical value
             //double critical = FastMath.sqrt(-.5 * FastMath.log(alpha/2)) / FastMath.sqrt(cluster.size()); // in wiki, it is Math.sqrt(-0.5 * Math.log(alpha/2)) / Math.sqrt(n)
             // double critical = Math.sqrt((3/alpha)/cluster.size()); // with sufficiently large n
-            double critical = generateCriticalValue(cluster.size());
+            // double critical = generateCriticalValue(cluster.size());
 
-            // TODO soll ich mit jedem pca vector KS test ausprobieren?
-            double[] pcaFilter = runPCA(relation, cluster);
+            
             // double[][] data = new double[cluster.size()][RelationUtil.dimensionality(relation)];
             // int j=0;
             // for(DBIDIter iditer = cluster.getIDs().iter(); iditer.valid(); iditer.advance()) {
             //     O vec = relation.get(iditer);
             //     data[j++] = vec.toArray();
             // }
-            NormalDistribution projectedNorm = projectedModel(cluster, relation, pcaFilter);
-
-            double[] projectedData = projectedData(cluster, relation, pcaFilter);
-
-            // then KS-Test with projected data and projected model
-            // KSTest is too strict. It cannot be passed on large data.
-            double D = ksTest(projectedData, projectedNorm); // test statistic of KS-Test
-
-            if(D > critical) {
-                //rejected
-                return rejected = true;
-            }
+            projectedNorms[j] = projectedModel(relation, cluster, pcaFilter);
+            projectedSamples[j] = projectedData(relation, cluster, pcaFilter);
+            j++;
         }
-        return rejected;
+        // then KS-Test with projected data and projected model
+        // KSTest is too strict. It cannot be passed on large data.
+        double D = ksTest(projectedSamples, projectedNorms); // test statistic of KS-Test
+
+        if(D > critical) {
+            //rejected
+            return true;
+        }
+
+        return false;
     }
     /**
      * generate the critical value for ks test
@@ -169,7 +180,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         // the number of Repeat count for simulation (n' = 3/alpha)
         int m = (int) FastMath.round(3/alpha);
         if(m >= n) {
-        throw new IllegalArgumentException("not sufficiently large n");
+            throw new IllegalArgumentException("not sufficiently large n");
         }
         double[] Dm = new double[m];
         // Monte Carlo Simulation
@@ -205,10 +216,10 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
      * @param cluster 
      * @return filter that outputs one dimension matrix
      */
-    private double[] runPCA(Relation<O> relation, Cluster<M> cluster) {
+    private double[] runPCA(Relation<O> relation) {
         StandardCovarianceMatrixBuilder scov = new StandardCovarianceMatrixBuilder();
         PCARunner pca = new PCARunner(scov);
-        PCAResult pcaResult = pca.processIds(cluster.getIDs(), relation);
+        PCAResult pcaResult = pca.processIds(relation.getDBIDs(), relation);
 
         // return first Vector in sorted EigenPairs, because the filter outputs one dimension
         double[][] eigenvectors = pcaResult.getEigenvectors();
@@ -226,7 +237,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
      * @param P projection
      * @return one dimensional projected data
      */
-    private double[] projectedData(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
+    private double[] projectedData(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
         DBIDs ids = cluster.getIDs();
         double[][] data = new double[ids.size()][];
         double[] projectedData = new double[ids.size()];
@@ -259,7 +270,7 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
      * @param P projection
      * @return projected model
      */
-    private NormalDistribution projectedModel(Cluster<? extends MeanModel> cluster, Relation<O> relation, double[] P) {
+    private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
         CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
         double[][] mat = cov.makePopulationMatrix();
         double projectedMean = transposeTimes(P, cov.getMeanVector());
@@ -293,6 +304,38 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         }
         return D;
     }
+    /**
+   * KS-tests on the reduced data and models in one dimension. 
+   * 
+   * @param sample sample data reduced to one dimension, stored per cluster in a one-dimensional array.
+   * @param norm normal distribution for the reduced models that are stored per cluster in array.
+   * @return maximum value of Dn
+   */
+  private double ksTest(double[][] sample, NormalDistribution[] norm) {
+    double D = 0;
+
+    for(int i=0; i<sample.length; i++){
+      // if cluster.size() < 1, to avoid the null point exception.
+      if(sample[i] == null || norm[i] == null) continue;
+
+      int index = 0;
+      Arrays.sort(sample[i]);
+      while(index < sample[i].length) {
+        double x = sample[i][index];
+        double model_cdf = norm[i].cdf(x); 
+        // Advance on first curve
+        index++;
+        // Handle multiple points with same x:
+        while (index < sample[i].length && sample[i][index] == x) {
+          index++;
+        }
+        double empirical_cdf = ((double) index) / (sample[i].length);
+        D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
+      }
+    }
+    
+    return D;
+  }
 
     @Override
     public TypeInformation[] getInputTypeRestriction() {
@@ -339,6 +382,12 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         public static final OptionID SEED_ID = new OptionID("pgmeans.seed", "Random seed for splitting clusters.");
 
         /**
+         * Critical value for the Anderson-Darling-Test
+         */
+        public static final OptionID CRITICAL_ID = new OptionID("pgmeans.critical", "Critical value for the Kolmogorov Smirnov test.");
+
+
+        /**
          * Stopping threshold
          */
         protected double delta;
@@ -373,6 +422,11 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
          */
         protected RandomFactory random;
 
+        /**
+         * Critical value
+         */
+        protected double critical;
+
 
         @Override
         public void configure(Parameterization config) {
@@ -396,11 +450,14 @@ public class PGMeans_PCA_KST<O extends NumberVector, M extends MeanModel> implem
         new Flag(SOFT_ID) //
                 .grab(config, x -> soft = x);
         new RandomParameter(SEED_ID).grab(config, x -> random = x);
+        new DoubleParameter(CRITICAL_ID) //
+          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
+          .grab(config, x -> critical = x);
         }
 
         @Override
         public PGMeans_PCA_KST make() {
-            return new PGMeans_PCA_KST(delta, mfactory, random);
+            return new PGMeans_PCA_KST(delta, mfactory, random, critical);
         }
     }
 }
