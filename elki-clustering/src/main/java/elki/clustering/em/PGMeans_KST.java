@@ -21,6 +21,10 @@
 package elki.clustering.em;
 
 
+import static elki.math.linearalgebra.VMath.normalize;
+import static elki.math.linearalgebra.VMath.transposeTimes;
+import static elki.math.linearalgebra.VMath.transposeTimesTimes;
+
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Random;
@@ -31,6 +35,7 @@ import elki.clustering.em.models.MultivariateGaussianModelFactory;
 import elki.data.Cluster;
 import elki.data.Clustering;
 import elki.data.NumberVector;
+import elki.data.model.EMModel;
 import elki.data.model.MeanModel;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
@@ -39,19 +44,20 @@ import elki.database.ids.DBIDs;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
-import elki.math.linearalgebra.CovarianceMatrix;
 import elki.math.statistics.distribution.NormalDistribution;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.constraints.CommonConstraints;
 import elki.utilities.optionhandling.parameterization.Parameterization;
-import elki.utilities.optionhandling.parameters.*;
+import elki.utilities.optionhandling.parameters.DoubleParameter;
+import elki.utilities.optionhandling.parameters.Flag;
+import elki.utilities.optionhandling.parameters.IntParameter;
+import elki.utilities.optionhandling.parameters.ObjectParameter;
+import elki.utilities.optionhandling.parameters.RandomParameter;
 import elki.utilities.random.RandomFactory;
-import static elki.math.linearalgebra.VMath.*;
-
 import net.jafama.FastMath;
 
-public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements ClusteringAlgorithm<Clustering<M>>{
+public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements ClusteringAlgorithm<Clustering<M>>{
   /**
    * Class logger
    */
@@ -77,7 +83,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param random for Random Projection
    * @param alpha confidence for ks test
    */
-  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, double critical){
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, double critical) {
     this.delta = delta;
     this.mfactory = mfactory;
     this.p = p;
@@ -99,7 +105,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
     if(relation.size() == 0) {
       throw new IllegalArgumentException("database empty: must contain elements");
     }
-
+    
     // PG-Means
     boolean rejected = true;
     EM<O, M> em = new EM<O, M>(k, delta, mfactory);
@@ -148,16 +154,13 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
       int j=0;
       for(Cluster<M> cluster : clusters){
-        if(cluster.size() < 1) continue; 
-        projectedSamples[j] = projectedData(relation, cluster, P);
+        if(cluster.size() < 1) {
+          j++;
+          continue; 
+        }
         projectedNorms[j] = projectedModel(relation, cluster, P);
+        projectedSamples[j] = projectedData(relation, cluster, P);
         j++;
-
-        // double[] projectedData = projectedData(relation, cluster, P);
-        // NormalDistribution projectedNorm = projectedModel(relation, cluster, P);
-        // double test_D = ksTest(projectedData, projectedNorm);
-        // double c = 0.886 / FastMath.sqrt(cluster.size());
-        // if(test_D > c) return true;
       }
       double D = ksTest(projectedSamples, projectedNorms);
       if(D > critical) {
@@ -167,6 +170,169 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
       
     }
     return false;
+  }
+  private double generateCritical(int n, double alpha){
+    if(0<n && n <= 4){
+      if(alpha == 0.2) return 0.3;
+        else if(alpha == 0.15) return 0.319;
+        else if(alpha == 0.1) return 0.352;
+        else if(alpha == 0.05) return 0.381;
+        else if(alpha == 0.01) return 0.417;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 5){
+      if(alpha == 0.2) return 0.285;
+        else if(alpha == 0.15) return 0.299;
+        else if(alpha == 0.1) return 0.315;
+        else if(alpha == 0.05) return 0.337;
+        else if(alpha == 0.01) return 0.405;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 6){
+      if(alpha == 0.2) return 0.265;
+        else if(alpha == 0.15) return 0.277;
+        else if(alpha == 0.1) return 0.294;
+        else if(alpha == 0.05) return 0.319;
+        else if(alpha == 0.01) return 0.364;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 7){
+      if(alpha == 0.2) return 0.247;
+        else if(alpha == 0.15) return 0.258;
+        else if(alpha == 0.1) return 0.276;
+        else if(alpha == 0.05) return 0.3;
+        else if(alpha == 0.01) return 0.348;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 8){
+      if(alpha == 0.2) return 0.233;
+        else if(alpha == 0.15) return 0.244;
+        else if(alpha == 0.1) return 0.261;
+        else if(alpha == 0.05) return 0.285;
+        else if(alpha == 0.01) return 0.331;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 9){
+      if(alpha == 0.2) return 0.223;
+        else if(alpha == 0.15) return 0.233;
+        else if(alpha == 0.1) return 0.249;
+        else if(alpha == 0.05) return 0.271;
+        else if(alpha == 0.01) return 0.311;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 10){
+      if(alpha == 0.2) return 0.215;
+        else if(alpha == 0.15) return 0.224;
+        else if(alpha == 0.1) return 0.239;
+        else if(alpha == 0.05) return 0.258;
+        else if(alpha == 0.01) return 0.294;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 11){
+      if(alpha == 0.2) return 0.206;
+        else if(alpha == 0.15) return 0.217;
+        else if(alpha == 0.1) return 0.23;
+        else if(alpha == 0.05) return 0.249;
+        else if(alpha == 0.01) return 0.284;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 12){
+      if(alpha == 0.2) return 0.199;
+        else if(alpha == 0.15) return 0.212;
+        else if(alpha == 0.1) return 0.223;
+        else if(alpha == 0.05) return 0.242;
+        else if(alpha == 0.01) return 0.275;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 13){
+      if(alpha == 0.2) return 0.190;
+        else if(alpha == 0.15) return 0.202;
+        else if(alpha == 0.1) return 0.214;
+        else if(alpha == 0.05) return 0.234;
+        else if(alpha == 0.01) return 0.268;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 14){
+      if(alpha == 0.2) return 0.183;
+        else if(alpha == 0.15) return 0.194;
+        else if(alpha == 0.1) return 0.207;
+        else if(alpha == 0.05) return 0.227;
+        else if(alpha == 0.01) return 0.261;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 15){
+      if(alpha == 0.2) return 0.177;
+        else if(alpha == 0.15) return 0.187;
+        else if(alpha == 0.1) return 0.201;
+        else if(alpha == 0.05) return 0.22;
+        else if(alpha == 0.01) return 0.257;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 16){
+      if(alpha == 0.2) return 0.173;
+        else if(alpha == 0.15) return 0.182;
+        else if(alpha == 0.1) return 0.195;
+        else if(alpha == 0.05) return 0.213;
+        else if(alpha == 0.01) return 0.25;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 17){
+      if(alpha == 0.2) return 0.169;
+        else if(alpha == 0.15) return 0.177;
+        else if(alpha == 0.1) return 0.189;
+        else if(alpha == 0.05) return 0.206;
+        else if(alpha == 0.01) return 0.245;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 18){
+      if(alpha == 0.2) return 0.166;
+        else if(alpha == 0.15) return 0.173;
+        else if(alpha == 0.1) return 0.184;
+        else if(alpha == 0.05) return 0.2;
+        else if(alpha == 0.01) return 0.239;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 19){
+      if(alpha == 0.2) return 0.163;
+        else if(alpha == 0.15) return 0.169;
+        else if(alpha == 0.1) return 0.179;
+        else if(alpha == 0.05) return 0.195;
+        else if(alpha == 0.01) return 0.235;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n == 20){
+      if(alpha == 0.2) return 0.16;
+        else if(alpha == 0.15) return 0.166;
+        else if(alpha == 0.1) return 0.174;
+        else if(alpha == 0.05) return 0.19;
+        else if(alpha == 0.01) return 0.231;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n <= 25){
+      if(alpha == 0.2) return 0.149;
+        else if(alpha == 0.15) return 0.153;
+        else if(alpha == 0.1) return 0.165;
+        else if(alpha == 0.05) return 0.18;
+        else if(alpha == 0.01) return 0.203;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else if(n <= 30){
+      if(alpha == 0.2) return 0.131;
+        else if(alpha == 0.15) return 0.136;
+        else if(alpha == 0.1) return 0.144;
+        else if(alpha == 0.05) return 0.161;
+        else if(alpha == 0.01) return 0.187;
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    else {
+      if(alpha == 0.2) return 0.736/FastMath.sqrt(n);
+        else if(alpha == 0.15) return 0.768/FastMath.sqrt(n);
+        else if(alpha == 0.1) return 0.805/FastMath.sqrt(n);
+        else if(alpha == 0.05) return 0.886/FastMath.sqrt(n);
+        else if(alpha == 0.01) return 1.031/FastMath.sqrt(n);
+        else LOG.warning("the confidence value alpha is not valid");
+    }
+    return 0.;
   }
   /**
    * project the data that is in @param cluster
@@ -199,11 +365,10 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
    * @param P projection
    * @return projected model through projection @param P 
    */
-  private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
-    CovarianceMatrix cov = CovarianceMatrix.make(relation, cluster.getIDs());
-    double[][] mat = cov.makePopulationMatrix();
-    double projectedMean = transposeTimes(P, cov.getMeanVector());
-    double projectedVar = transposeTimesTimes(P, mat, P);
+  private NormalDistribution projectedModel(Relation<O> relation, Cluster<? extends M> cluster, double[] P) {
+    EMModel emModel = cluster.getModel();
+    double projectedMean = transposeTimes(P, emModel.getMean());
+    double projectedVar = transposeTimesTimes(P, emModel.getCovarianceMatrix(), P);
     return new NormalDistribution(projectedMean, FastMath.sqrt(projectedVar));
   }
   
@@ -306,7 +471,7 @@ public class PGMeans_KST<O extends NumberVector, M extends MeanModel> implements
         D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
       }
     }
-    
+      
     return D;
   }
 

@@ -114,10 +114,11 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
     
     protected EMClusterModelFactory<? super O, M> mfactory;
     protected double delta;
+
     /**
      * degree of freedom for the criterion S* in the paper "model based Gaussian and Non Gaussian Clustering (1993) by Jeffrey D.Banfield and Adrian E. Raftery"
      */
-    protected final int DEGREE_OF_FREEDOM = 2; // for the criterion Ward
+    protected int DEGREE_OF_FREEDOM = 0;
     
     /**
      * Constructor.
@@ -199,7 +200,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
      */
     private void updateClusters(ModifiableDBIDs[] clusters, int x, int y) {
       // p dimensional multivariate normal case
-      final int p = RelationUtil.dimensionality(relation);
+      final int dim = RelationUtil.dimensionality(relation);
 
       if(!clusters[x].isEmpty() && !clusters[y].isEmpty()) {
         ModifiableDBIDs cluster1 = clusters[x];
@@ -208,7 +209,11 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
         //lambda is the likelihood ratio test statistic
         double lambda = likelihoodRatioTestStatistic(cluster1, cluster2, mergedCluster);
         if(r>0){
-          AWE[r] += lambda - (1.5 + FastMath.log(p * mergedCluster.size())) * 2*DEGREE_OF_FREEDOM;;
+          if(isSingleton(cluster1) && isSingleton(cluster2)) DEGREE_OF_FREEDOM= -dim; 
+          else if(isSingleton(cluster1) || isSingleton(cluster2)) DEGREE_OF_FREEDOM = 0; // for the criterion Ward
+          else DEGREE_OF_FREEDOM = dim;
+
+          AWE[r] += lambda - (1.5 + FastMath.log(dim * mergedCluster.size())) * 2*DEGREE_OF_FREEDOM;
         }
         clusters[y].addDBIDs(clusters[x]);
         clusters[x].clear();
