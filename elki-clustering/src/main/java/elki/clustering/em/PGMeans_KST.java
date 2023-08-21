@@ -460,7 +460,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
       Arrays.sort(sample[i]);
       while(index < sample[i].length) {
         double x = sample[i][index];
-        double model_cdf = norm[i].cdf(x); 
+        // double model_cdf = norm[i].cdf(x); 
+        double model_cdf = 0;
+        if(norm[i].getStddev() == 0) model_cdf = 1;
+        else model_cdf = norm[i].cdf(x);
         // Advance on first curve
         index++;
         // Handle multiple points with same x:
