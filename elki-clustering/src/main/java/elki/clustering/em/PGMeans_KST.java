@@ -21,15 +21,15 @@
 package elki.clustering.em;
 
 
-import static elki.math.linearalgebra.VMath.normalize;
-import static elki.math.linearalgebra.VMath.transposeTimes;
-import static elki.math.linearalgebra.VMath.transposeTimesTimes;
+import static elki.math.linearalgebra.VMath.*;
 
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 
 import elki.clustering.ClusteringAlgorithm;
+import elki.clustering.em.models.EMClusterModel;
 import elki.clustering.em.models.EMClusterModelFactory;
 import elki.clustering.em.models.MultivariateGaussianModelFactory;
 import elki.data.Cluster;
@@ -37,14 +37,24 @@ import elki.data.Clustering;
 import elki.data.NumberVector;
 import elki.data.model.EMModel;
 import elki.data.model.MeanModel;
+import elki.data.type.SimpleTypeInformation;
 import elki.data.type.TypeInformation;
 import elki.data.type.TypeUtil;
+import elki.database.datastore.DataStoreFactory;
+import elki.database.datastore.DataStoreUtil;
+import elki.database.datastore.WritableDataStore;
 import elki.database.ids.DBIDIter;
+import elki.database.ids.DBIDUtil;
 import elki.database.ids.DBIDs;
+import elki.database.ids.ModifiableDBIDs;
+import elki.database.relation.MaterializedRelation;
 import elki.database.relation.Relation;
 import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
+import elki.logging.statistics.DoubleStatistic;
+import elki.logging.statistics.LongStatistic;
 import elki.math.statistics.distribution.NormalDistribution;
+import elki.result.Metadata;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.Parameterizer;
 import elki.utilities.optionhandling.constraints.CommonConstraints;
@@ -71,7 +81,11 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   protected EMClusterModelFactory<? super O, M> mfactory;
   protected RandomFactory random;
   protected Random rand;
-  protected double critical;
+  protected double[] w;
+  protected double bestlikelihood = Double.NEGATIVE_INFINITY;
+  protected Clustering<M> bestClustering;
+  protected final int ITER = 10; // iteration number to find the bestlikelihood
+
 
   /**
    *
@@ -83,14 +97,13 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * @param random for Random Projection
    * @param alpha confidence for ks test
    */
-  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, double critical) {
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha) {
     this.delta = delta;
     this.mfactory = mfactory;
     this.p = p;
     this.random = random;
     rand = this.random.getSingleThreadedRandom();
     this.alpha = alpha;
-    this.critical = critical;
   }
 
   // TODO to compute the critical value instead of input of the value direct
@@ -108,22 +121,24 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     
     // PG-Means
     boolean rejected = true;
-    EM<O, M> em = new EM<O, M>(k, delta, mfactory);
-    Clustering<M> clustering = em.run(relation);;
+    Clustering<M> clustering = em(relation, -1, 1, false, 0.);
     while(rejected) {
       rejected = testResult(relation, clustering, p);
       if(rejected) {
         k++;
-        System.out.println(k);
+        System.out.println("number of k: " +k);
+        bestlikelihood = Double.NEGATIVE_INFINITY;
+        //repeat expectation-maximization 25times and then choose one result that has best Likelihood.
+        for(int i=0; i<ITER; i++){
+          em(relation, -1, 1, false, 0.); // TODO check to be stored into bestlikelihood well 
+        }
+        clustering = bestClustering;
       }
       // in general, the number of clusters is within 100 for small data
       if(k>100){
         System.out.println("KS-Test is going to be wrong");
         break;
       }
-      //TODO ?? repeat expectation-maximization 10times (maxiter=10) and then choose one result that has best Likelihood (that is EM-algorithm).
-      EM<O, M> em_new = new EM<O, M>(k, delta, mfactory, 10, false);
-      clustering = em_new.run(relation);
     }
     
     System.out.println("k :" + k);
@@ -150,19 +165,20 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
       double[] P = generateGaussianRandomProjection(dim);
       P = normalize(P);
       
-      double[][] projectedSamples = new double[clusters.size()][relation.size()];
-      NormalDistribution[] projectedNorms = new NormalDistribution[clusters.size()];
+      double[] projectedSamples = projectedData(relation, P);
+      NormalDistribution[] projectedModels = new NormalDistribution[clusters.size()];
       int j=0;
       for(Cluster<M> cluster : clusters){
         if(cluster.size() < 1) {
           j++;
           continue; 
         }
-        projectedNorms[j] = projectedModel(relation, cluster, P);
-        projectedSamples[j] = projectedData(relation, cluster, P);
+        projectedModels[j] = projectedModel(relation, cluster, P);
         j++;
       }
-      double D = ksTest(projectedSamples, projectedNorms);
+      double D = ksTest(projectedSamples, projectedModels);
+      double critical = lillie_cv(relation.size(), alpha);
+      double c = simulate_ks_cv(alpha, projectedModels, relation.size());
       if(D > critical) {
         //rejected
         return true;
@@ -171,179 +187,164 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     }
     return false;
   }
-  private double generateCritical(int n, double alpha){
-    if(0<n && n <= 4){
-      if(alpha == 0.2) return 0.3;
-        else if(alpha == 0.15) return 0.319;
-        else if(alpha == 0.1) return 0.352;
-        else if(alpha == 0.05) return 0.381;
-        else if(alpha == 0.01) return 0.417;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 5){
-      if(alpha == 0.2) return 0.285;
-        else if(alpha == 0.15) return 0.299;
-        else if(alpha == 0.1) return 0.315;
-        else if(alpha == 0.05) return 0.337;
-        else if(alpha == 0.01) return 0.405;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 6){
-      if(alpha == 0.2) return 0.265;
-        else if(alpha == 0.15) return 0.277;
-        else if(alpha == 0.1) return 0.294;
-        else if(alpha == 0.05) return 0.319;
-        else if(alpha == 0.01) return 0.364;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 7){
-      if(alpha == 0.2) return 0.247;
-        else if(alpha == 0.15) return 0.258;
-        else if(alpha == 0.1) return 0.276;
-        else if(alpha == 0.05) return 0.3;
-        else if(alpha == 0.01) return 0.348;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 8){
-      if(alpha == 0.2) return 0.233;
-        else if(alpha == 0.15) return 0.244;
-        else if(alpha == 0.1) return 0.261;
-        else if(alpha == 0.05) return 0.285;
-        else if(alpha == 0.01) return 0.331;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 9){
-      if(alpha == 0.2) return 0.223;
-        else if(alpha == 0.15) return 0.233;
-        else if(alpha == 0.1) return 0.249;
-        else if(alpha == 0.05) return 0.271;
-        else if(alpha == 0.01) return 0.311;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 10){
-      if(alpha == 0.2) return 0.215;
-        else if(alpha == 0.15) return 0.224;
-        else if(alpha == 0.1) return 0.239;
-        else if(alpha == 0.05) return 0.258;
-        else if(alpha == 0.01) return 0.294;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 11){
-      if(alpha == 0.2) return 0.206;
-        else if(alpha == 0.15) return 0.217;
-        else if(alpha == 0.1) return 0.23;
-        else if(alpha == 0.05) return 0.249;
-        else if(alpha == 0.01) return 0.284;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 12){
-      if(alpha == 0.2) return 0.199;
-        else if(alpha == 0.15) return 0.212;
-        else if(alpha == 0.1) return 0.223;
-        else if(alpha == 0.05) return 0.242;
-        else if(alpha == 0.01) return 0.275;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 13){
-      if(alpha == 0.2) return 0.190;
-        else if(alpha == 0.15) return 0.202;
-        else if(alpha == 0.1) return 0.214;
-        else if(alpha == 0.05) return 0.234;
-        else if(alpha == 0.01) return 0.268;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 14){
-      if(alpha == 0.2) return 0.183;
-        else if(alpha == 0.15) return 0.194;
-        else if(alpha == 0.1) return 0.207;
-        else if(alpha == 0.05) return 0.227;
-        else if(alpha == 0.01) return 0.261;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 15){
-      if(alpha == 0.2) return 0.177;
-        else if(alpha == 0.15) return 0.187;
-        else if(alpha == 0.1) return 0.201;
-        else if(alpha == 0.05) return 0.22;
-        else if(alpha == 0.01) return 0.257;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 16){
-      if(alpha == 0.2) return 0.173;
-        else if(alpha == 0.15) return 0.182;
-        else if(alpha == 0.1) return 0.195;
-        else if(alpha == 0.05) return 0.213;
-        else if(alpha == 0.01) return 0.25;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 17){
-      if(alpha == 0.2) return 0.169;
-        else if(alpha == 0.15) return 0.177;
-        else if(alpha == 0.1) return 0.189;
-        else if(alpha == 0.05) return 0.206;
-        else if(alpha == 0.01) return 0.245;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 18){
-      if(alpha == 0.2) return 0.166;
-        else if(alpha == 0.15) return 0.173;
-        else if(alpha == 0.1) return 0.184;
-        else if(alpha == 0.05) return 0.2;
-        else if(alpha == 0.01) return 0.239;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 19){
-      if(alpha == 0.2) return 0.163;
-        else if(alpha == 0.15) return 0.169;
-        else if(alpha == 0.1) return 0.179;
-        else if(alpha == 0.05) return 0.195;
-        else if(alpha == 0.01) return 0.235;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n == 20){
-      if(alpha == 0.2) return 0.16;
-        else if(alpha == 0.15) return 0.166;
-        else if(alpha == 0.1) return 0.174;
-        else if(alpha == 0.05) return 0.19;
-        else if(alpha == 0.01) return 0.231;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n <= 25){
-      if(alpha == 0.2) return 0.149;
-        else if(alpha == 0.15) return 0.153;
-        else if(alpha == 0.1) return 0.165;
-        else if(alpha == 0.05) return 0.18;
-        else if(alpha == 0.01) return 0.203;
-        else LOG.warning("the confidence value alpha is not valid");
-    }
-    else if(n <= 30){
-      if(alpha == 0.2) return 0.131;
-        else if(alpha == 0.15) return 0.136;
-        else if(alpha == 0.1) return 0.144;
-        else if(alpha == 0.05) return 0.161;
-        else if(alpha == 0.01) return 0.187;
-        else LOG.warning("the confidence value alpha is not valid");
+
+  /**
+   * Lilliefors critical value
+   * 
+   * @param n length of data
+   * @param alpha confidence
+   * @return critical value
+   */
+  private double lillie_cv(int n, double alpha){
+    double dmax = 1.0;
+    double deltaDmax = 0.5;
+    if(n <= 100){
+      for(int i=0; i<40; i++){
+        double a = FastMath.exp(-7.01256 * FastMath.pow2(dmax) * (n + 2.78019) + 2.99587 * dmax * FastMath.sqrt(n + 2.78019) - .122119 + 0.974598 / FastMath.sqrt(n) + 1.67997/n);
+        // double diff = a - alpha;
+        if(a > alpha) dmax += deltaDmax;
+        else dmax -= deltaDmax;
+        deltaDmax /= 2;
+      }
     }
     else {
-      if(alpha == 0.2) return 0.736/FastMath.sqrt(n);
-        else if(alpha == 0.15) return 0.768/FastMath.sqrt(n);
-        else if(alpha == 0.1) return 0.805/FastMath.sqrt(n);
-        else if(alpha == 0.05) return 0.886/FastMath.sqrt(n);
-        else if(alpha == 0.01) return 1.031/FastMath.sqrt(n);
-        else LOG.warning("the confidence value alpha is not valid");
+      for(int i=0; i<40; i++){
+        double a = FastMath.exp(-7.01256 * FastMath.pow2(dmax*FastMath.pow(n/100, 0.49)) * (100 + 2.78019) + 2.99587 * (dmax*FastMath.pow(n/100, 0.49)) * FastMath.sqrt(100 + 2.78019) - .122119 + 0.974598/FastMath.sqrt(100) + 1.67997/100);
+        // double diff = a - alpha;
+        if(a > alpha) dmax += deltaDmax;
+        else dmax -= deltaDmax;
+        deltaDmax /= 2;
+      }
     }
-    return 0.;
+    return dmax;
   }
+
+  /**
+   * generate for the critical value
+   * 
+   * @param alpha confidence
+   * @param norms models
+   * @param n length of the data
+   */
+  private double simulate_ks_cv(double alpha, NormalDistribution[] norms, int n){
+    int numTrials = (int) (3 * FastMath.ceil(1/alpha));
+    int simulation_n = k*20;
+    if(n < simulation_n) simulation_n = n;
+    double[] ksStats = new double[numTrials];
+    // TODO n개의 랜덤 데이터가지고 numTrials만큼 ks test 반복. 
+    // Monte Carlo Simulation
+    for(int i=0; i<numTrials; i++){
+      double[] sample = new double[simulation_n];
+      for(int j=0; j<simulation_n; j++){
+        // NormalDistribution rndNorm = norms[rand.nextInt(norms.length)];
+        sample[j] = rand.nextGaussian();// * rndNorm.getStddev() + rndNorm.getMean();
+      }
+      double sampleMean = sum(sample) / sample.length;
+      double sampleStd = FastMath.sqrt(squareSum(minus(sample, sampleMean)) / (sample.length-1));
+      
+      ksStats[i] = ksTest(sample, new NormalDistribution(sampleMean, sampleStd));
+    }
+    double cv = quantile(ksStats, (1-alpha)*100);
+    return cv * FastMath.sqrt(simulation_n) / FastMath.sqrt(n);
+  }
+  /**
+     * compute the quantile 
+     * 
+     * @param data
+     * @param percentile
+     * @return qauntile of the @param data with @param percentile
+     */
+    private static double quantile(double[] data, double percentile) {
+      Arrays.sort(data);
+      int index = (int) Math.ceil(percentile / 100.0 * data.length) - 1;
+      return data[index];
+  }
+
+  /**
+   * EM clustering from ELKI
+   * 
+   * @param relation relation
+   * @param em EM object
+   * @return result for EM clustering
+   */
+  private Clustering<M> em(Relation<O> relation, int maxiter, int miniter, boolean soft, double prior) {
+    if(relation.size() == 0) {
+      throw new IllegalArgumentException("database empty: must contain elements");
+    }
+    final SimpleTypeInformation<double[]> SOFT_TYPE = new SimpleTypeInformation<>(double[].class);
+    final String KEY = EM.class.getName();
+
+    // initial models and weights
+    List<? extends EMClusterModel<? super O, M>> models = mfactory.buildInitialModels(relation, k);
+    this.w = new double[k];
+    WritableDataStore<double[]> probClusterIGivenX = DataStoreUtil.makeStorage(relation.getDBIDs(), DataStoreFactory.HINT_HOT | DataStoreFactory.HINT_SORTED, double[].class);
+    double loglikelihood = EM.assignProbabilitiesToInstances(relation, models, probClusterIGivenX, null);
+    DoubleStatistic likestat = new DoubleStatistic(this.getClass().getName() + ".loglikelihood");
+    LOG.statistics(likestat.setDouble(loglikelihood));
+
+    // iteration unless no change
+    int it = 0, lastimprovement = 0;
+    double bestloglikelihood = Double.NEGATIVE_INFINITY;// loglikelihood; // For
+                                                        // detecting
+                                                        // instabilities.
+    for(++it; it < maxiter || maxiter < 0; it++) {
+      final double oldloglikelihood = loglikelihood;
+      EM.recomputeCovarianceMatrices(relation, probClusterIGivenX, models, prior);
+      // reassign probabilities
+      loglikelihood = EM.assignProbabilitiesToInstances(relation, models, probClusterIGivenX, null);
+
+      LOG.statistics(likestat.setDouble(loglikelihood));
+      if(loglikelihood - bestloglikelihood > delta) {
+        lastimprovement = it;
+        bestloglikelihood = loglikelihood;
+      }
+      if(it >= miniter && (Math.abs(loglikelihood - oldloglikelihood) <= delta || lastimprovement < it >> 1)) {
+        break;
+      }
+    }
+    LOG.statistics(new LongStatistic(KEY + ".iterations", it));
+
+    // fill result with clusters and models
+    List<ModifiableDBIDs> hardClusters = new ArrayList<>(k);
+    for(int i = 0; i < k; i++) {
+      hardClusters.add(DBIDUtil.newArray());
+    }
+
+    // provide a hard clustering
+    for(DBIDIter iditer = relation.iterDBIDs(); iditer.valid(); iditer.advance()) {
+      hardClusters.get(argmax(probClusterIGivenX.get(iditer))).add(iditer);
+    }
+    Clustering<M> result = new Clustering<>();
+    Metadata.of(result).setLongName("EM Clustering");
+    // provide models within the result and assign the weights for each cluster
+    for(int i = 0; i < k; i++) {
+      result.addToplevelCluster(new Cluster<>(hardClusters.get(i), models.get(i).finalizeCluster()));
+      w[i] = models.get(i).getWeight();
+    }
+    if(soft) {
+      Metadata.hierarchyOf(result).addChild(new MaterializedRelation<>("EM Cluster Probabilities", SOFT_TYPE, relation.getDBIDs(), probClusterIGivenX));
+    }
+    else {
+      probClusterIGivenX.destroy();
+    }
+    // update best likelihood
+    if(this.bestlikelihood <= bestloglikelihood){
+      this.bestlikelihood = bestloglikelihood;
+      this.bestClustering = result;
+    }
+
+    return result;
+  }
+  
   /**
    * project the data that is in @param cluster
    * 
    * @param relation relation
-   * @param cluster cluster
    * @param P is a projection that the data can be projected through
    * @return projected data of the data in @param cluster through @param P projection
    */
-  private double[] projectedData(Relation<O> relation, Cluster<? extends MeanModel> cluster, double[] P) {
-    DBIDs ids = cluster.getIDs();
+  private double[] projectedData(Relation<O> relation, double[] P) {
+    DBIDs ids = relation.getDBIDs();
     double[][] data = new double[ids.size()][];
     double[] projectedData = new double[ids.size()];
 
@@ -417,20 +418,47 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   }
 
   /**
+     * KS Test for one sample
+     *
+     * @param sample not sorted data
+     * @param norm normal distribution
+     * @return test statistic
+     */
+    private double ksTest(double[] sample, NormalDistribution norm) {
+      int index = 0;
+      double D = 0;
+      Arrays.sort(sample);
+      while(index < sample.length) {
+          double x = sample[index];
+          double model_cdf = norm.cdf(x);
+          // Advance on first curve
+          index++;
+          // Handle multiple points with same x:
+          while (index < sample.length && sample[index] == x) {
+              index++;
+          }
+          double empirical_cdf = ((double) index + 1.) / (sample.length + 1.);
+          D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
+      }
+      return D;
+  }
+
+  /**
    * KS Test for one sample
+   * KS-tests on the reduced data and models in one dimension. 
    *
-   * @param sample data
-   * @param norm normal distribution
+   * @param sample sample data reduced to one dimension
+   * @param norm normal distribution for the reduced models that are stored per cluster in array.
    * @return test statistic
    */
-  private double ksTest(double[] sample, NormalDistribution norm) {
+  private double ksTest(double[] sample, NormalDistribution[] norm) {
     int index = 0;
     double D = 0;
 
     Arrays.sort(sample);
     while(index < sample.length) {
       double x = sample[index];
-      double model_cdf = norm.cdf(x);
+      double model_cdf = cdfForMixtureModel(x, norm);
       // Advance on first curve
       index++;
       // Handle multiple points with same x:
@@ -442,40 +470,14 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     }
     return D;
   }
-  /**
-   * KS-tests on the reduced data and models in one dimension. 
-   * 
-   * @param sample sample data reduced to one dimension, stored per cluster in a one-dimensional array.
-   * @param norm normal distribution for the reduced models that are stored per cluster in array.
-   * @return maximum value of Dn
-   */
-  private double ksTest(double[][] sample, NormalDistribution[] norm) {
-    double D = 0;
 
-    for(int i=0; i<sample.length; i++){
-      // if cluster.size() < 1, to avoid the null point exception.
-      if(sample[i] == null || norm[i] == null) continue;
-
-      int index = 0;
-      Arrays.sort(sample[i]);
-      while(index < sample[i].length) {
-        double x = sample[i][index];
-        // double model_cdf = norm[i].cdf(x); 
-        double model_cdf = 0;
-        if(norm[i].getStddev() == 0) model_cdf = 1;
-        else model_cdf = norm[i].cdf(x);
-        // Advance on first curve
-        index++;
-        // Handle multiple points with same x:
-        while (index < sample[i].length && sample[i][index] == x) {
-          index++;
-        }
-        double empirical_cdf = ((double) index) / (sample[i].length);
-        D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
-      }
+  private double cdfForMixtureModel(double x, NormalDistribution[] norm){
+    double cdf = 0;
+    for(int i=0; i<norm.length; i++){
+      if(norm[i] == null) continue;
+      cdf += w[i] * norm[i].cdf(x);
     }
-      
-    return D;
+    return cdf;
   }
 
   // TODO TypeInformation이 뭐하는 역할인지 알기 (gui에서 입력을 해야하게끔 만들어주는것인가?)
@@ -579,11 +581,6 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     protected RandomFactory random;
 
     /**
-     * Critical value
-     */
-    protected double critical;
-
-    /**
      * confidence alpha
      */
     protected double alpha;
@@ -614,9 +611,6 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
           .addConstraint(CommonConstraints.GREATER_EQUAL_ZERO_INT) //
       		.grab(config, x -> p = x); //
       new RandomParameter(SEED_ID).grab(config, x -> random = x);
-      new DoubleParameter(CRITICAL_ID) //
-          .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
-          .grab(config, x -> critical = x);
       new DoubleParameter(ALPHA_ID) //
           .addConstraint(CommonConstraints.GREATER_THAN_ZERO_DOUBLE) //
           .grab(config, x -> alpha = x);
@@ -624,7 +618,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
 
     @Override
     public PGMeans_KST make() {
-      return new PGMeans_KST(delta, mfactory, p, random, alpha, critical);
+      return new PGMeans_KST(delta, mfactory, p, random, alpha);
     }
   }
 }
