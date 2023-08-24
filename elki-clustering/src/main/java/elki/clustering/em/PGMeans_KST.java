@@ -72,19 +72,50 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * Class logger
    */
   private static final Logging LOG = Logging.getLogger(PGMeans_KST.class);
-
+  /**
+   * Number of clusters
+   */
   protected int k = 1;
+  /**
+   * Delta parameter
+   */
   protected double delta;
-  protected int p; // number of projections
-  protected double alpha; // significant level
-
+  /**
+   * Number of projections
+   */
+  protected int p;
+  /**
+   * Significant level
+   */
+  protected double alpha;
+  /**
+   * Factory for producing the initial cluster model.
+   */
   protected EMClusterModelFactory<? super O, M> mfactory;
+  /**
+   * Factory for producing the random class
+   */
   protected RandomFactory random;
+  /**
+   * Random class for producing the random Gaussian projection
+   */
   protected Random rand;
+  /**
+   * Weight for each cluster
+   */
   protected double[] w;
+  /**
+   * Best likelihood with 25 iterations of the EM algorithm 
+   */
   protected double bestlikelihood = Double.NEGATIVE_INFINITY;
+  /**
+   * Clustering results for best likelihood
+   */
   protected Clustering<M> bestClustering;
-  protected final int ITER = 10; // iteration number to find the bestlikelihood
+  /**
+   * Iteration for the best likelihood
+   */
+  protected final int ITER = 25; // iteration number to find the bestlikelihood
 
 
   /**
@@ -111,8 +142,8 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   /**
    * Performs the PG-Means algorithm on the given database.
    *
-   * @param relation to use
-   * @return result
+   * @param relation relation
+   * @return clustering result for PG-means
    */
   public Clustering<M> run(Relation<O> relation) {
     if(relation.size() == 0) {
@@ -127,10 +158,12 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
       if(rejected) {
         k++;
         System.out.println("number of k: " +k);
+        // init weights
+        this.w = new double[k];
         bestlikelihood = Double.NEGATIVE_INFINITY;
-        //repeat expectation-maximization 25times and then choose one result that has best Likelihood.
+        //repeat expectation-maximization 25 times and then choose one result that has best Likelihood.
         for(int i=0; i<ITER; i++){
-          em(relation, -1, 1, false, 0.); // TODO check to be stored into bestlikelihood well 
+          em(relation, -1, 1, false, 0.);
         }
         clustering = bestClustering;
       }
@@ -149,7 +182,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   /**
    * generate a random projection,
    * and project the dataset and model,
-   * Then, KS-test
+   * Then, run Kolmogorov Smirnov test
    *
    * @param relation relation
    * @param clustering the result of em with k
@@ -158,13 +191,15 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    */
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
     ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
+    double critical = lillie_cv(relation.size(), alpha);
 
     for(int i=0; i<p; i++) {
       final int dim = RelationUtil.dimensionality(relation);
       // generate random projection
       double[] P = generateGaussianRandomProjection(dim);
+      // normalize the length of the projection 
       P = normalize(P);
-      
+      // project the data set
       double[] projectedSamples = projectedData(relation, P);
       NormalDistribution[] projectedModels = new NormalDistribution[clusters.size()];
       int j=0;
@@ -173,12 +208,12 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
           j++;
           continue; 
         }
+        // project the models
         projectedModels[j] = projectedModel(relation, cluster, P);
         j++;
       }
       double D = ksTest(projectedSamples, projectedModels);
-      double critical = lillie_cv(relation.size(), alpha);
-      double c = simulate_ks_cv(alpha, projectedModels, relation.size());
+      // double c = simulate_ks_cv(alpha, projectedModels, relation.size());
       if(D > critical) {
         //rejected
         return true;
@@ -192,7 +227,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * Lilliefors critical value
    * 
    * @param n length of data
-   * @param alpha confidence
+   * @param alpha significant level
    * @return critical value
    */
   private double lillie_cv(int n, double alpha){
@@ -264,7 +299,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * EM clustering from ELKI
    * 
    * @param relation relation
-   * @param em EM object
+   * @param maxiter Maximum number of iterations
+   * @param miniter Minimum number of iterations
+   * @param soft Include soft assignments
+   * @param prior MAP prior
    * @return result for EM clustering
    */
   private Clustering<M> em(Relation<O> relation, int maxiter, int miniter, boolean soft, double prior) {
@@ -274,9 +312,8 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     final SimpleTypeInformation<double[]> SOFT_TYPE = new SimpleTypeInformation<>(double[].class);
     final String KEY = EM.class.getName();
 
-    // initial models and weights
+    // initial models
     List<? extends EMClusterModel<? super O, M>> models = mfactory.buildInitialModels(relation, k);
-    this.w = new double[k];
     WritableDataStore<double[]> probClusterIGivenX = DataStoreUtil.makeStorage(relation.getDBIDs(), DataStoreFactory.HINT_HOT | DataStoreFactory.HINT_SORTED, double[].class);
     double loglikelihood = EM.assignProbabilitiesToInstances(relation, models, probClusterIGivenX, null);
     DoubleStatistic likestat = new DoubleStatistic(this.getClass().getName() + ".loglikelihood");
@@ -317,9 +354,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     Clustering<M> result = new Clustering<>();
     Metadata.of(result).setLongName("EM Clustering");
     // provide models within the result and assign the weights for each cluster
+    double[] w_temp = new double[k];
     for(int i = 0; i < k; i++) {
       result.addToplevelCluster(new Cluster<>(hardClusters.get(i), models.get(i).finalizeCluster()));
-      w[i] = models.get(i).getWeight();
+      w_temp[i] = models.get(i).getWeight();
     }
     if(soft) {
       Metadata.hierarchyOf(result).addChild(new MaterializedRelation<>("EM Cluster Probabilities", SOFT_TYPE, relation.getDBIDs(), probClusterIGivenX));
@@ -327,10 +365,11 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     else {
       probClusterIGivenX.destroy();
     }
-    // update best likelihood
-    if(this.bestlikelihood <= bestloglikelihood){
+    // update best likelihood, store the clustering result and assign the weights for the best likelihood
+    if(this.bestlikelihood < bestloglikelihood){
       this.bestlikelihood = bestloglikelihood;
       this.bestClustering = result;
+      w = w_temp.clone();
     }
 
     return result;
@@ -374,26 +413,11 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   }
   
   /**
-   * generate a gaussian random projection
+   * generate a gaussian random projection that reduces the dimensions to one dimension
    *
    * @param dim number of dimensions for input data
    * @return gaussian random projection
    */
-  // TODO which one ?
-  // private double[] generateGaussianRandomProjection(int dim) {
-  //   // create two array for Means and Covariance for random projection P, which is a matrix dim x 1
-  //   double[] randomProjectionMeans = new double[dim];
-  //   double[][] randomProjectionCov = new double[dim][dim];
-  //   for(int i=0; i<dim; i++) {
-  //     randomProjectionCov[i][i] = 1.0/dim;
-  //   }
-
-  //   CholeskyDecomposition chol = new CholeskyDecomposition(randomProjectionCov);
-  //   double[][] L = chol.getL();
-  //   double[] Z = generateRandomGaussian(L[0].length);
-
-  //   return plus(times(L,Z), randomProjectionMeans);
-  // }
   private double[] generateGaussianRandomProjection(int dim) {
     double[] projection = new double[dim];
     for(int i=0; i<projection.length; i++){
@@ -402,25 +426,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     return projection;
   }
 
-
   /**
-   * generate one dimensional random gaussian vector
-   * @param n length of data
-   * @return random gaussian vector
-   */
-  private double[] generateRandomGaussian(int n) {
-    Random rand = random.getSingleThreadedRandom();
-    double[] Z = new double[n];
-    for(int i=0; i<n; i++) {
-      Z[i] = rand.nextGaussian();
-    }
-    return Z;
-  }
-
-  /**
-     * KS Test for one sample
+     * Kolmogorov Smirnov Test for one sample
      *
-     * @param sample not sorted data
+     * @param sample not sorted data sample
      * @param norm normal distribution
      * @return test statistic
      */
@@ -444,11 +453,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   }
 
   /**
-   * KS Test for one sample
-   * KS-tests on the reduced data and models in one dimension. 
+   * Kolmogorov Smirnov Test on the reduced data and models 
    *
-   * @param sample sample data reduced to one dimension
-   * @param norm normal distribution for the reduced models that are stored per cluster in array.
+   * @param sample data samples reduced to one dimension
+   * @param norm normal distributions for the reduced models that are stored per cluster in array
    * @return test statistic
    */
   private double ksTest(double[] sample, NormalDistribution[] norm) {
@@ -471,6 +479,13 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     return D;
   }
 
+  /**
+   * cumulative distribution function for the Gaussian mixture model
+   * 
+   * @param x value
+   * @param norm normal distributions reduced to one dimension
+   * @return cdf value for @param x
+   */
   private double cdfForMixtureModel(double x, NormalDistribution[] norm){
     double cdf = 0;
     for(int i=0; i<norm.length; i++){
@@ -480,7 +495,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     return cdf;
   }
 
-  // TODO TypeInformation이 뭐하는 역할인지 알기 (gui에서 입력을 해야하게끔 만들어주는것인가?)
+  
   @Override
   public TypeInformation[] getInputTypeRestriction() {
     return TypeUtil.array(mfactory.getInputTypeRestriction());
