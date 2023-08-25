@@ -137,8 +137,6 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     this.alpha = alpha;
   }
 
-  // TODO to compute the critical value instead of input of the value direct
-
   /**
    * Performs the PG-Means algorithm on the given database.
    *
@@ -163,7 +161,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
         bestlikelihood = Double.NEGATIVE_INFINITY;
         //repeat expectation-maximization 25 times and then choose one result that has best Likelihood.
         for(int i=0; i<ITER; i++){
-          em(relation, -1, 1, false, 0.);
+          em(relation, 70, 1, false, 0.);
         }
         clustering = bestClustering;
       }
