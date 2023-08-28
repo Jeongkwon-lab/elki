@@ -116,6 +116,10 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * Iteration for the best likelihood
    */
   protected final int ITER = 25; // iteration number to find the bestlikelihood
+  /**
+   * Key for statistics logging.
+   */
+  private static final String KEY = EM.class.getName();
 
 
   /**
@@ -173,6 +177,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     }
     
     System.out.println("k :" + k);
+    LOG.statistics(new LongStatistic(KEY + ".iterations", k));
 
     return clustering;
   }
@@ -499,6 +504,9 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     return TypeUtil.array(mfactory.getInputTypeRestriction());
   }
 
+  /**
+   * Parameterization class
+   */
   public static class Par<O, M extends MeanModel> implements Parameterizer {
 
     /**
