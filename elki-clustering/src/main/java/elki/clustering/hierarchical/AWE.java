@@ -20,7 +20,7 @@
  */
 package elki.clustering.hierarchical;
 
-import elki.clustering.em.models.EMClusterModelFactory;
+import elki.clustering.em.EM;
 import elki.clustering.em.models.MultivariateGaussianModel;
 import elki.clustering.hierarchical.linkage.CentroidLinkage;
 import elki.clustering.hierarchical.linkage.Linkage;
@@ -38,6 +38,7 @@ import elki.distance.minkowski.EuclideanDistance;
 import elki.distance.minkowski.SquaredEuclideanDistance;
 import elki.logging.Logging;
 import elki.logging.progress.FiniteProgress;
+import elki.logging.statistics.DoubleStatistic;
 import elki.math.linearalgebra.CovarianceMatrix;
 import elki.utilities.optionhandling.OptionID;
 import elki.utilities.optionhandling.parameterization.Parameterization;
@@ -108,6 +109,10 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
      * degree of freedom
      */
     protected int DEGREE_OF_FREEDOM = 0;
+    /**
+     * Key for statistics logging.
+     */
+    private static final String KEY = EM.class.getName();
     
     /**
      * Constructor.
@@ -141,18 +146,20 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
       LOG.ensureCompleted(prog);
 
       // print AWE values
-      printArr(AWE);
+      printAwe(AWE);
 
       return builder.complete();
     }
     /**
-     * print a array
+     * print a AWE array
      * 
-     * @param arr array
+     * @param awe awe array
      */
-    private void printArr(double[] arr){
-      for(int i=0; i<arr.length; i++){
-        System.out.print(arr[i]+", ");
+    private void printAwe(double[] awe){
+      // shows upto AWE_25
+      for(int i=0; i<25; i++){ 
+        System.out.print(awe[i]+", ");
+        LOG.statistics(new DoubleStatistic(KEY + ".awe", awe[i]));
       }
       System.out.println("");
     }

@@ -53,6 +53,7 @@ import elki.database.relation.RelationUtil;
 import elki.logging.Logging;
 import elki.logging.statistics.DoubleStatistic;
 import elki.logging.statistics.LongStatistic;
+import elki.math.MathUtil;
 import elki.math.statistics.distribution.NormalDistribution;
 import elki.result.Metadata;
 import elki.utilities.optionhandling.OptionID;
@@ -177,7 +178,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     }
     
     System.out.println("k :" + k);
-    LOG.statistics(new LongStatistic(KEY + ".iterations", k));
+    LOG.statistics(new LongStatistic(KEY + ".k", k));
 
     return clustering;
   }
@@ -194,7 +195,6 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    */
   private boolean testResult(Relation<O> relation, Clustering<M> clustering, int p) {
     ArrayList<Cluster<M>> clusters = new ArrayList<>(clustering.getAllClusters());
-    double critical = lillie_cv(relation.size(), alpha);
 
     for(int i=0; i<p; i++) {
       final int dim = RelationUtil.dimensionality(relation);
@@ -216,10 +216,15 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
         j++;
       }
       double D = ksTest(projectedSamples, projectedModels);
-      // double c = simulate_ks_cv(alpha, projectedModels, relation.size());
+      double critical = lillie_cv(relation.size(), alpha);
+
       if(D > critical) {
         //rejected
         return true;
+      }
+      else{
+        critical = simulate_ks_cv(alpha, projectedModels, relation.size());
+        if(D > critical) return true;
       }
       
     }
@@ -227,7 +232,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   }
 
   /**
-   * Lilliefors critical value
+   * Lilliefors critical value for the code PG-means of Greg Hamerly
    * 
    * @param n length of data
    * @param alpha significant level
@@ -258,44 +263,126 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   }
 
   /**
-   * generate for the critical value
+   * generate for the critical value according to "PG-means: learning the number of clusters in data" by Yu Feng and Greg Hamerly
    * 
    * @param alpha confidence
    * @param norms models
    * @param n length of the data
    */
   private double simulate_ks_cv(double alpha, NormalDistribution[] norms, int n){
-    int numTrials = (int) (3 * FastMath.ceil(1/alpha));
+    int numTrials = MathUtil.max((int) (3 * FastMath.ceil(1/alpha)), 2000);
     int simulation_n = k*20;
     if(n < simulation_n) simulation_n = n;
     double[] ksStats = new double[numTrials];
-    // TODO n개의 랜덤 데이터가지고 numTrials만큼 ks test 반복. 
-    // Monte Carlo Simulation
-    for(int i=0; i<numTrials; i++){
-      double[] sample = new double[simulation_n];
-      for(int j=0; j<simulation_n; j++){
-        // NormalDistribution rndNorm = norms[rand.nextInt(norms.length)];
-        sample[j] = rand.nextGaussian();// * rndNorm.getStddev() + rndNorm.getMean();
-      }
-      double sampleMean = sum(sample) / sample.length;
-      double sampleStd = FastMath.sqrt(squareSum(minus(sample, sampleMean)) / (sample.length-1));
-      
-      ksStats[i] = ksTest(sample, new NormalDistribution(sampleMean, sampleStd));
+    int k = norms.length;
+    double[] weightCdf = initWeightCdf();
+    double[] ecdf_lower = ecdf(true, simulation_n);
+    double[] ecdf_upper = ecdf(false, simulation_n);
+    // assign mus and sigmas of clusters reduced to one dimension
+    double[] mus = new double[k];
+    double[] sigmas = new double[k];
+    for(int i=0; i<k; i++){
+      mus[i] = norms[i].getMean();
+      sigmas[i] = norms[i].getStddev();
     }
-    double cv = quantile(ksStats, (1-alpha)*100);
+    // Simulation
+    for(int i=0; i<numTrials; i++){
+      int[] labels = new int[simulation_n];
+      double[] cluster_chooser = MathUtil.randomDoubleArray(simulation_n, rand);
+      for(int j=0; j<k; j++){
+        for(int l=0; l<simulation_n; l++){
+          if(cluster_chooser[l] <= weightCdf[j]){
+            labels[l] += 1;
+          }
+        }
+      }
+      double[] data = new double[simulation_n];
+      for(int j=0; j<simulation_n; j++){
+        data[j] = rand.nextGaussian() * sigmas[labels[j]-1] + mus[labels[j]-1];
+      }
+      double[] cdf = new double[simulation_n];
+      for(int j=1; j<=k; j++){
+        List<Integer> inCluster = new ArrayList<>();
+        for(int l=0; l<simulation_n; l++){
+          if(labels[l] == j) inCluster.add(l);
+        }
+        double estWeight = (double) inCluster.size() / (double) simulation_n;
+        if(estWeight > 0){
+          double[] chosen_data = new double[inCluster.size()];
+          int l=0;
+          for(int index : inCluster){
+            chosen_data[l++] = data[index];
+          }
+          if(chosen_data.length > 1){
+            // esimate mu
+            double estMu = sum(chosen_data) / chosen_data.length;
+            // esimate sigma 
+            double estSigma = FastMath.sqrt(squareSum(minus(chosen_data, estMu))) / FastMath.sqrt((chosen_data.length-1));
+            // assign new estimated normal distribution
+            NormalDistribution estNorm = new NormalDistribution(estMu, estSigma);
+            for(int m=0; m<simulation_n; m++){
+              cdf[m] += estWeight * estNorm.erfc(-(data[m]-estMu) / (estSigma * MathUtil.SQRT2));
+            }
+          }
+        }
+      }
+      for(int j=0; j<simulation_n; j++){
+        cdf[j] *= 0.5;
+      }
+      Arrays.sort(cdf);
+      double D = Double.NEGATIVE_INFINITY;
+      for(int j=0; j<simulation_n; j++){
+        double tmp = FastMath.abs(ecdf_lower[j] - cdf[j]);
+        if(D < tmp) D = tmp;
+      }
+      for(int j=0; j<simulation_n; j++){
+        double tmp = FastMath.abs(ecdf_upper[j] - cdf[j]);
+        if(D < tmp) D = tmp;
+      }
+      ksStats[i] = D; 
+    }
+    Arrays.sort(ksStats);
+    double cv = ksStats[(int)FastMath.ceil((1-alpha)*numTrials)];
     return cv * FastMath.sqrt(simulation_n) / FastMath.sqrt(n);
   }
   /**
-     * compute the quantile 
-     * 
-     * @param data
-     * @param percentile
-     * @return qauntile of the @param data with @param percentile
-     */
-    private static double quantile(double[] data, double percentile) {
-      Arrays.sort(data);
-      int index = (int) Math.ceil(percentile / 100.0 * data.length) - 1;
-      return data[index];
+   * generate ecdf lower or upper
+   * 
+   * @param lower if true, it is for generating ecdf_lower
+   * @param n 
+   * @return ecdf
+   */
+  private double[] ecdf(boolean lower, int n){
+    double[] ecdf = new double[n];
+    if(lower){
+      ecdf[0] = 0;
+      double sum = 0;
+      for(int i=1; i<n; i++){
+        sum += 1./n;
+        ecdf[i] = sum;
+      }
+      return ecdf;
+    }
+    else{
+      ecdf[n-1] = 1;
+      double sum = 0;
+      for(int i=0; i<n-1; i++){
+        sum += 1./n;
+        ecdf[i] = sum;
+      }
+      return ecdf;
+    }
+  }
+  private double[] initWeightCdf(){
+    double[] weight = w.clone();
+    Arrays.sort(weight);
+    double[] weightCdf = new double[weight.length];
+    for(int i=0; i<weightCdf.length; i++){
+      for(int j=0; j<=i; j++){
+        weightCdf[i] += weight[j];
+      }
+    }
+    return weightCdf;
   }
 
   /**
@@ -427,32 +514,6 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
       projection[i] = rand.nextGaussian();
     }
     return projection;
-  }
-
-  /**
-     * Kolmogorov Smirnov Test for one sample
-     *
-     * @param sample not sorted data sample
-     * @param norm normal distribution
-     * @return test statistic
-     */
-    private double ksTest(double[] sample, NormalDistribution norm) {
-      int index = 0;
-      double D = 0;
-      Arrays.sort(sample);
-      while(index < sample.length) {
-          double x = sample[index];
-          double model_cdf = norm.cdf(x);
-          // Advance on first curve
-          index++;
-          // Handle multiple points with same x:
-          while (index < sample.length && sample[index] == x) {
-              index++;
-          }
-          double empirical_cdf = ((double) index + 1.) / (sample.length + 1.);
-          D = Math.max(D, Math.abs(model_cdf - empirical_cdf));
-      }
-      return D;
   }
 
   /**
