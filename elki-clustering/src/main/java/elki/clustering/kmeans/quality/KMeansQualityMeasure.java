@@ -60,4 +60,8 @@ public interface KMeansQualityMeasure<O extends NumberVector> {
    *         {@code NaN}.
    */
   boolean isBetter(double currentCost, double bestCost);
+
+  String getName();
+
+  boolean lowerIsBetter();
 }

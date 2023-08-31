@@ -111,4 +111,14 @@ public class BayesianInformationCriterionZhao extends AbstractKMeansQualityMeasu
     // Careful: bestCost may be NaN!
     return !(currentCost <= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "BIC-Z";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return false;
+  }
 }

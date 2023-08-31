@@ -68,4 +68,14 @@ public class AkaikeInformationCriterion extends AbstractKMeansQualityMeasure<Num
     // Careful: bestCost may be NaN!
     return !(currentCost <= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "AIC";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return false;
+  }
 }
