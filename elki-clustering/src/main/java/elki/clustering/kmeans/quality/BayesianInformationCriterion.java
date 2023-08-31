@@ -67,4 +67,14 @@ public class BayesianInformationCriterion extends AbstractKMeansQualityMeasure<N
     // Careful: bestCost may be NaN!
     return !(currentCost <= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "BIC";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return false;
+  }
 }

@@ -63,4 +63,14 @@ public class WithinClusterMeanDistance implements KMeansQualityMeasure<NumberVec
     // Careful: bestCost may be NaN!
     return !(currentCost >= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "Within Cluster Distance";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return true;
+  }
 }
