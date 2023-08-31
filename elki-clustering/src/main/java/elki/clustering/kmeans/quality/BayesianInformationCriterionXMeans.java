@@ -127,4 +127,14 @@ public class BayesianInformationCriterionXMeans extends AbstractKMeansQualityMea
     // Careful: bestCost may be NaN!
     return !(currentCost <= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "BIC-X";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return false;
+  }
 }

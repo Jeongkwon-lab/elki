@@ -49,4 +49,14 @@ public class WithinClusterVariance extends AbstractKMeansQualityMeasure<NumberVe
     // Careful: bestCost may be NaN!
     return !(currentCost >= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "Within Cluster Variance";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return true;
+  }
 }

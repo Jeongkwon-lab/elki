@@ -58,12 +58,12 @@ public class KMeansQuality implements Evaluator {
     Clustering<MeanModel> mcs = (Clustering<MeanModel>) cs;
     double res = measure.quality(mcs, distance, rel);
     if(LOG.isStatistics()) {
-      LOG.statistics(new DoubleStatistic(key + ".result", res));
+      LOG.statistics(new DoubleStatistic(key + "." + measure.getName(), res));
     }
 
     EvaluationResult ev = EvaluationResult.findOrCreate(cs, "Internal Clustering Evaluation");
-    MeasurementGroup g = ev.findOrCreateGroup("KMeans-quality");
-    g.addMeasure("Quality Measure", res, 0, Double.POSITIVE_INFINITY, false);
+    MeasurementGroup g = ev.findOrCreateGroup("KMeans-Quality");
+    g.addMeasure(measure.getName(), res, 0, Double.POSITIVE_INFINITY, measure.lowerIsBetter());
     if(!Metadata.hierarchyOf(cs).addChild(ev)) {
       Metadata.of(ev).notifyChanged();
     }
