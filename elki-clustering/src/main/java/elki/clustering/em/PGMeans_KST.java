@@ -120,7 +120,23 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
   /**
    * Key for statistics logging.
    */
-  private static final String KEY = EM.class.getName();
+  private static final String KEY = PGMeans_KST.class.getName();
+  /**
+   * Minimum number of iterations to do
+   */
+  protected int miniter;
+  /**
+   * Maximum number of iterations to allow
+   */
+  protected int maxiter;
+  /**
+   * Prior to enable MAP estimation (use 0 for MLE)
+   */
+  protected double prior = 0.;
+  /**
+   * Retain soft assignments.
+   */
+  protected boolean soft;
 
 
   /**
@@ -134,12 +150,48 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * @param alpha confidence for ks test
    */
   public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha) {
+    this(delta, mfactory, p, random, alpha, 1, -1, 0., false);
+  }
+  /**
+   *
+   * Constructor.
+   *
+   * @param delta delta parameter
+   * @param mfactory EM cluster model factory
+   * @param p number of projections
+   * @param random for Random Projection
+   * @param alpha confidence for ks test
+   * @param maxiter Maximum number of iterations
+   */
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, int maxiter) {
+    this(delta, mfactory, p, random, alpha, 1, maxiter, 0., false);
+  }
+  /**
+   *
+   * Constructor.
+   *
+   * @param delta delta parameter
+   * @param mfactory EM cluster model factory
+   * @param p number of projections
+   * @param random for Random Projection
+   * @param alpha confidence for ks test
+   * @param miniter Minimum number of iterations
+   * @param maxiter Maximum number of iterations
+   * @param prior MAP prior
+   * @param sotf Include soft assignments
+   */
+  public PGMeans_KST(double delta, EMClusterModelFactory<? super O, M> mfactory, int p, RandomFactory random, double alpha, int miniter, int maxiter, double prior, boolean soft) {
+    super();
     this.delta = delta;
     this.mfactory = mfactory;
     this.p = p;
     this.random = random;
     rand = this.random.getSingleThreadedRandom();
     this.alpha = alpha;
+    this.miniter = miniter;
+    this.maxiter = maxiter;
+    this.prior = prior;
+    this.soft = soft;
   }
 
   /**
@@ -155,7 +207,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     
     // PG-Means
     boolean rejected = true;
-    Clustering<M> clustering = em(relation, -1, 1, false, 0.);
+    Clustering<M> clustering = em(relation, maxiter, miniter, soft, prior);
     while(rejected) {
       rejected = testResult(relation, clustering, p);
       if(rejected) {
@@ -166,7 +218,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
         bestlikelihood = Double.NEGATIVE_INFINITY;
         //repeat expectation-maximization 25 times and then choose one result that has best Likelihood.
         for(int i=0; i<ITER; i++){
-          em(relation, 70, 1, false, 0.);
+          em(relation, maxiter, miniter, soft, prior);
         }
         clustering = bestClustering;
       }
@@ -269,7 +321,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
    * @param norms models
    * @param n length of the data
    */
-  private double simulate_ks_cv(double alpha, NormalDistribution[] norms, int n){
+  public double simulate_ks_cv(double alpha, NormalDistribution[] norms, int n){
     int numTrials = MathUtil.max((int) (3 * FastMath.ceil(1/alpha)), 2000);
     int simulation_n = k*20;
     if(n < simulation_n) simulation_n = n;
@@ -282,7 +334,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     double[] mus = new double[k];
     double[] sigmas = new double[k];
     for(int i=0; i<k; i++){
-      mus[i] = norms[i].getMean();
+      mus[i] = norms[i].getMean(); 
       sigmas[i] = norms[i].getStddev();
     }
     // Simulation
@@ -373,6 +425,11 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
       return ecdf;
     }
   }
+  /**
+   * generate weight cdf
+   * 
+   * @return weight cdf
+   */
   private double[] initWeightCdf(){
     double[] weight = w.clone();
     Arrays.sort(weight);
@@ -457,9 +514,17 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     }
     // update best likelihood, store the clustering result and assign the weights for the best likelihood
     if(this.bestlikelihood < bestloglikelihood){
-      this.bestlikelihood = bestloglikelihood;
-      this.bestClustering = result;
-      w = w_temp.clone();
+      ArrayList<Cluster<M>> clusters = new ArrayList<>(result.getAllClusters());
+      boolean containsNullCluster = false;
+      for(Cluster<M> cluster : clusters){
+        if(cluster.size() < 1) containsNullCluster = true;
+      }
+      // if there is a cluster that contains not any element, it is not acceptable to be the best clustering
+      if(!containsNullCluster){
+        this.bestlikelihood = bestloglikelihood;
+        this.bestClustering = result;
+        w = w_temp.clone();
+      }
     }
 
     return result;
@@ -610,7 +675,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
     /**
      * Randomization seed.
      */
-    public static final OptionID SEED_ID = new OptionID("pgmeans.seed", "Random seed for splitting clusters.");
+    public static final OptionID SEED_ID = new OptionID("pgmeans.seed", "Random seed for generating the random projection.");
 
     /**
      * Critical value for the Anderson-Darling-Test
@@ -700,7 +765,7 @@ public class PGMeans_KST<O extends NumberVector, M extends EMModel> implements C
 
     @Override
     public PGMeans_KST make() {
-      return new PGMeans_KST(delta, mfactory, p, random, alpha);
+      return new PGMeans_KST(delta, mfactory, p, random, alpha, miniter, maxiter, prior, soft);
     }
   }
 }

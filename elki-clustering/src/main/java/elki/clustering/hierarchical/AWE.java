@@ -20,7 +20,6 @@
  */
 package elki.clustering.hierarchical;
 
-import elki.clustering.em.EM;
 import elki.clustering.em.models.MultivariateGaussianModel;
 import elki.clustering.hierarchical.linkage.CentroidLinkage;
 import elki.clustering.hierarchical.linkage.Linkage;
@@ -112,7 +111,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
     /**
      * Key for statistics logging.
      */
-    private static final String KEY = EM.class.getName();
+    private static final String KEY = AWE.class.getName();
     
     /**
      * Constructor.
@@ -159,7 +158,7 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
       // shows upto AWE_25
       for(int i=0; i<25; i++){ 
         System.out.print(awe[i]+", ");
-        LOG.statistics(new DoubleStatistic(KEY + ".awe", awe[i]));
+        LOG.statistics(new DoubleStatistic(KEY + ".AWE", awe[i]));
       }
       System.out.println("");
     }
