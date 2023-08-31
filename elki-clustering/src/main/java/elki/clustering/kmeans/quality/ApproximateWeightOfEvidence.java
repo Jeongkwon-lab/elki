@@ -39,4 +39,14 @@ public class ApproximateWeightOfEvidence extends AbstractKMeansQualityMeasure<Nu
     // Careful: bestCost may be NaN!
     return !(currentCost <= bestCost);
   }
+
+  @Override
+  public String getName() {
+    return "AWE";
+  }
+
+  @Override
+  public boolean lowerIsBetter() {
+    return false;
+  }
 }
