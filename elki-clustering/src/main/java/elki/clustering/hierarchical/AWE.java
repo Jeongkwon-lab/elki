@@ -214,9 +214,8 @@ public class AWE<O, M extends MeanModel> extends AGNES<O> {
           if(isSingleton(cluster1) && isSingleton(cluster2)) DEGREE_OF_FREEDOM= -dim; 
           else if(isSingleton(cluster1) || isSingleton(cluster2)) DEGREE_OF_FREEDOM = 0; // for the criterion Ward
           else DEGREE_OF_FREEDOM = dim;
-
-          double awe_new = lambda - (1.5 + FastMath.log(dim * mergedCluster.size())) * 2*DEGREE_OF_FREEDOM;
-          if(awe_new > AWE[r]) AWE[r] = awe_new;
+          
+          AWE[r] = lambda - (1.5 + FastMath.log(dim * mergedCluster.size())) * 2*DEGREE_OF_FREEDOM;
         }
         clusters[y].addDBIDs(clusters[x]);
         clusters[x].clear();
